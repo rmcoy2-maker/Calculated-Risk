@@ -3,195 +3,63 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Calculated Risk — Plan Comparison</title>
-  <meta name="description" content="Compare Basic, Pro, and Elite plans for Calculated Risk." />
+  <title>Features — Calculated Risk</title>
+  <meta name="description" content="Calculated Risk — sports analytics. We are not a sportsbook." />
   <link rel="icon" href="/assets/logo.png" />
   <style>
-    :root{
-      --bg:#0b1520;--card:#111b29;--muted:#98a2b3;--text:#e6edf6;--brand:#2ecc71;--border:#22324a;--ink:#d1e3ff;
-    }
-    *{box-sizing:border-box}
-    body{margin:0;background:radial-gradient(1000px 600px at 15% 0%, #0f2536 0%, var(--bg) 45%) fixed;color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial}
+    :root { --bg:#0b1520; --card:#111b29; --muted:#98a2b3; --text:#e6edf6; --brand:#2ecc71; --border:#22324a; }
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(1000px 600px at 15% 0%, #0f2536 0%, var(--bg) 45%) fixed;color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial}
     a{color:inherit;text-decoration:none}
     .wrap{max-width:1200px;margin:0 auto;padding:28px 20px}
     .topbar{display:flex;align-items:center;gap:14px}
-    .logo{width:28px;height:28px;border-radius:8px;background:#0f2a1a url('/assets/logo.png') center/cover no-repeat}
     .nav{margin-left:auto;display:flex;gap:22px}
-    h1{font-weight:800;font-size:36px;margin:10px 0 6px}
-    p.muted{color:var(--muted)}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:16px}
-    .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
-    .pbox{padding:20px}
-    .pbox h3{margin:0 0 6px}
-    .price{font-size:34px;font-weight:800;margin:8px 0}
-    .small{font-size:13px;color:var(--muted)}
-    .tag{display:inline-block;background:#1a2c1f;border:1px solid #254d35;color:#baf3d0;padding:4px 8px;border-radius:999px;font-size:12px;margin-left:6px}
-    .best{background:#1f2a40;border-color:#33508a;color:#d1e3ff}
-    ul.feats{margin:10px 0 0;padding:0 0 0 18px;color:#cfe0ff}
-
-    /* comparison table */
-    table{width:100%;border-collapse:separate;border-spacing:0 10px;margin:24px 0}
-    thead th{font-size:14px;color:#cfe0ff;text-align:left;padding:8px 10px}
-    tbody td, tbody th{background:var(--card);border:1px solid var(--border);padding:12px 10px}
-    tbody th{border-right:none;border-radius:12px 0 0 12px;width:38%}
-    tbody td{border-left:none;text-align:center}
-    tbody td:first-of-type{border-left:1px solid var(--border)}
-    tbody td:last-of-type{border-radius:0 12px 12px 0}
-
-    .cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+    .banner{background:#0f1f33;color:#cfe0ff;padding:8px 14px;text-align:center;font-size:14px;border-bottom:1px solid #1e2f4a}
+    .biglogo{display:flex;align-items:center;gap:14px}
+    .biglogo img{height:82px;width:auto;border-radius:12px;box-shadow:0 0 0 1px #1f3b2a}
+    .footer{margin:60px 0 24px;color:#8fa3bd;font-size:14px;text-align:center}
+    .prose p{color:#c7d3e1}
     .btn{background:#1f6f3f;color:#fff;padding:10px 16px;border-radius:10px;border:1px solid #194d31;cursor:pointer;font-weight:600}
-    .btn.ghost{background:transparent;border:1px solid #394b6a;color:#cfe0ff}
-
-    @media (max-width:980px){
-      .plans{grid-template-columns:1fr}
-      table{font-size:14px}
-      tbody th{width:auto}
-    }
+    .btn.sec{background:transparent;border-color:#2a3b55;color:#dbe7f7}
+    .small{font-size:13px;color:#98a2b3}
+    .grid{display:grid;gap:16px}
+    .grid.g3{grid-template-columns:repeat(3,1fr)}
+    .card{background:#0b1321;border:1px solid var(--border);border-radius:16px;padding:18px}
+    @media (max-width:980px){ .grid.g3{grid-template-columns:1fr} }
   </style>
 </head>
 <body>
+  <div class="banner">Calculated Risk provides sports <strong>analytics</strong> for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</div>
   <header class="wrap topbar">
-    <div class="logo" aria-label="Calculated Risk"></div>
-    <strong>Calculated Risk</strong>
+    <a class="biglogo" href="/assets/qr_calculatedrisk.png" target="_blank" rel="noopener">
+      <img src="/assets/logo.png" alt="Calculated Risk — open QR" />
+      <strong>Calculated Risk</strong>
+    </a>
     <nav class="nav">
       <a href="index.html">Home</a>
-      <a href="#compare">Compare Plans</a>
+      <a href="features.html">Features</a>
+      <a href="pricing.html">Compare Plans</a>
+      <a href="simulations.html">Simulations</a>
       <a href="beta.html">Join Beta</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
     </nav>
   </header>
 
   <main class="wrap">
-    <section>
-      <h1>Compare Plans</h1>
-      <p class="muted">Pricing kept in sync with the homepage. Annual plans reflect ≈17% savings vs paying monthly.</p>
+    
+  <h1>Features</h1>
+  <div class="grid g3" style="margin-top:18px">
+    <div class="card"><h3>Line Shop</h3><p class="small">Compare prices across books and auto-highlight the best lines.</p></div>
+    <div class="card"><h3>EV Comparisons</h3><p class="small">Estimate expected value and calibrate selections with live/archived data.</p></div>
+    <div class="card"><h3>Ghost Combo</h3><p class="small">Shadow your ideal combo and compare to live market offerings.</p></div>
+    <div class="card"><h3>Consistency Index</h3><p class="small">Stack wins/ATS covers to gauge reliability.</p></div>
+    <div class="card"><h3>Fair-Value Line</h3><p class="small">Model vs market with CLV tracking.</p></div>
+    <div class="card"><h3>Portfolio / Bankroll</h3><p class="small">Track exposure and results over time.</p></div>
+  </div>
 
-      <!-- Plan cards (match index.html pricing/features) -->
-      <div class="plans">
-        <div class="card pbox">
-          <h3>Basic</h3>
-          <div class="price">$20<span class="small">/mo</span></div>
-          <div class="small">or $200/yr <span class="muted">(≈17% off)</span></div>
-          <ul class="feats">
-            <li>Team View core (ATS, PPG/PA, volatility)</li>
-            <li>Market View basics</li>
-            <li>Streaks & momentum</li>
-          </ul>
-          <div class="cta"><a class="btn" href="#compare">Choose Basic</a></div>
-        </div>
-
-        <div class="card pbox">
-          <h3>Pro <span class="tag best">Best Value</span></h3>
-          <div class="price">$55<span class="small">/mo</span></div>
-          <div class="small">or $550/yr <span class="muted">(≈17% off)</span></div>
-          <ul class="feats">
-            <li>Situational splits (H/A, Fav/Dog, Rest)</li>
-            <li>Distribution charts</li>
-            <li>Parlay Builder (EV)</li>
-          </ul>
-          <div class="cta"><a class="btn" href="#compare">Choose Pro</a></div>
-        </div>
-
-        <div class="card pbox">
-          <h3>Elite <span class="tag">New</span></h3>
-          <div class="price">$80<span class="small">/mo</span></div>
-          <div class="small">or $800/yr <span class="muted">(≈17% off)</span></div>
-          <ul class="feats">
-            <li>Fair-Value Line (model vs market)</li>
-            <li>Line movement & CLV tracking</li>
-            <li>Portfolio / Bankroll tracker</li>
-          </ul>
-          <div class="cta"><a class="btn" href="#compare">Choose Elite</a></div>
-        </div>
-      </div>
-    </section>
-<!-- Top Nav -->
-<header class="bg-gray-900 text-white">
-  <nav class="max-w-6xl mx-auto px-6">
-    <ul class="flex gap-10 items-center py-4">
-      <!-- Home -->
-      <li>
-        <a href="index.html" class="hover:text-green-400 transition">Home</a>
-      </li>
-      <!-- Compare Plans (rename href if your page is different) -->
-      <li>
-        <a href="pricing.html" class="hover:text-green-400 transition">Compare Plans</a>
-      </li>
-      <!-- Join Beta -->
-      <li>
-        <a href="beta.html" class="hover:text-green-400 transition">Join Beta</a>
-      </li>
-    </ul>
-  </nav>
-</header>
-
-    <!-- Detailed comparison table -->
-    <section id="compare">
-      <table aria-label="Feature comparison">
-        <thead>
-          <tr>
-            <th scope="col">Feature</th>
-            <th scope="col" style="text-align:center">Basic<br><span class="small">$20/mo</span></th>
-            <th scope="col" style="text-align:center">Pro<br><span class="small">$55/mo</span></th>
-            <th scope="col" style="text-align:center">Elite<br><span class="small">$80/mo</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <th scope="row">Team View core (ATS, PPG/PA, volatility)</th>
-            <td>✔</td><td>✔</td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Market View basics</th>
-            <td>✔</td><td>✔</td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Streaks & momentum</th>
-            <td>✔</td><td>✔</td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Situational splits (H/A, Fav/Dog, Rest)</th>
-            <td></td><td>✔</td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Distribution charts</th>
-            <td></td><td>✔</td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Parlay Builder (EV)</th>
-            <td></td><td>✔</td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Fair-Value Line (model vs market)</th>
-            <td></td><td></td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Line movement & CLV tracking</th>
-            <td></td><td></td><td>✔</td>
-          </tr>
-          <tr>
-            <th scope="row">Portfolio / Bankroll tracker</th>
-            <td></td><td></td><td>✔</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div class="cta" style="justify-content:center">
-        <a class="btn" href="index.html#preorder">Join the Waitlist</a>
-        <a class="btn ghost" href="beta.html">Apply for Beta</a>
-      </div>
-      <p class="small" style="text-align:center;margin-top:10px">No payment collected now. Pay only when we go live.</p>
-    </section>
   </main>
 
-  <footer class="wrap" style="border-top:1px solid var(--border);margin-top:40px;color:#8fa3bd;font-size:14px;display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between">
-    <div>© <span id="y"></span> Calculated Risk • Play responsibly</div>
-    <div style="display:flex;gap:16px">
-      <a href="privacy.html">Privacy</a>
-      <span>•</span>
-      <a href="terms.html">Terms</a>
-    </div>
-  </footer>
-
-  <script>document.getElementById('y').textContent=new Date().getFullYear()</script>
+  <div class="wrap footer">© <span id="y"></span> Calculated Risk • Play responsibly</div>
+  <script>document.getElementById('y').textContent = new Date().getFullYear()</script>
 </body>
 </html>
