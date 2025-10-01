@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Calculated Risk — Compare Plans</title>
+  <meta name="description" content="Compare Basic, Pro, and Elite plans for Calculated Risk." />
+  <link rel="icon" href="/assets/logo.png" />
+  <style>
+    :root{
+      --bg:#0b1520;--card:#111b29;--muted:#98a2b3;--text:#e6edf6;--brand:#2ecc71;--border:#22324a;--ink:#d1e3ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(1000px 600px at 15% 0%, #0f2536 0%, var(--bg) 45%) fixed;color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1200px;margin:0 auto;padding:28px 20px}
+    .topbar{display:flex;align-items:center;gap:14px}
+    .logo{width:28px;height:28px;border-radius:8px;background:#0f2a1a url('/assets/logo.png') center/cover no-repeat}
+    .nav{margin-left:auto;display:flex;gap:22px}
+    h1{font-weight:800;font-size:36px;margin:10px 0 6px}
+    p.muted{color:var(--muted)}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px}
+    .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
+    .pbox{padding:20px}
+    .pbox h3{margin:0 0 6px}
+    .price{font-size:34px;font-weight:800;margin:8px 0}
+    .small{font-size:13px;color:var(--muted)}
+    .tag{display:inline-block;background:#1a2c1f;border:1px solid #254d35;color:#baf3d0;padding:4px 8px;border-radius:999px;font-size:12px;margin-left:6px}
+    .best{background:#1f2a40;border-color:#33508a;color:#d1e3ff}
+    ul.feats{margin:10px 0 0;padding:0 0 0 18px;color:#cfe0ff}
+    table{width:100%;border-collapse:separate;border-spacing:0 10px;margin:24px 0}
+    thead th{font-size:14px;color:#cfe0ff;text-align:left;padding:8px 10px}
+    tbody td, tbody th{background:var(--card);border:1px solid var(--border);padding:12px 10px}
+    tbody th{border-right:none;border-radius:12px 0 0 12px;width:38%}
+    tbody td{border-left:none;text-align:center}
+    tbody td:first-of-type{border-left:1px solid var(--border)}
+    tbody td:last-of-type{border-radius:0 12px 12px 0}
+    .cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+    .btn{background:#1f6f3f;color:#fff;padding:10px 16px;border-radius:10px;border:1px solid #194d31;cursor:pointer;font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid #394b6a;color:#cfe0ff}
+    @media (max-width:980px){
+      .plans{grid-template-columns:1fr}
+      table{font-size:14px}
+      tbody th{width:auto}
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap topbar">
+    <div class="logo" aria-label="Calculated Risk"></div>
+    <strong>Calculated Risk</strong>
+    <nav class="nav">
+      <a href="index.html">Home</a>
+      <a href="index.html#features">Features</a>
+      <a href="beta.html">Join Beta</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h1>Compare Plans</h1>
+      <p class="muted">Annual plans reflect ≈17% savings vs paying monthly.</p>
+
+      <div class="plans">
+        <div class="card pbox">
+          <h3>Basic</h3>
+          <div class="price">$20<span class="small">/mo</span></div>
+          <div class="small">or $200/yr <span class="muted">(≈17% off)</span></div>
+          <ul class="feats">
+            <li>Team View core (ATS, PPG/PA, volatility)</li>
+            <li>Market View basics</li>
+            <li>Streaks & momentum</li>
+          </ul>
+          <div class="cta"><a class="btn" href="beta.html">Choose Basic</a></div>
+        </div>
+
+        <div class="card pbox">
+          <h3>Pro <span class="tag best">Best Value</span></h3>
+          <div class="price">$55<span class="small">/mo</span></div>
+          <div class="small">or $550/yr <span class="muted">(≈17% off)</span></div>
+          <ul class="feats">
+            <li>Situational splits (H/A, Fav/Dog, Rest)</li>
+            <li>Distribution charts</li>
+            <li>Combo Builder (EV)</li>
+          </ul>
+          <div class="cta"><a class="btn" href="beta.html">Choose Pro</a></div>
+        </div>
+
+        <div class="card pbox">
+          <h3>Elite <span class="tag">New</span></h3>
+          <div class="price">$80<span class="small">/mo</span></div>
+          <div class="small">or $800/yr <span class="muted">(≈17% off)</span></div>
+          <ul class="feats">
+            <li>Fair-Value Line (model vs market)</li>
+            <li>Line movement & CLV tracking</li>
+            <li>Portfolio / Bankroll tracker</li>
+          </ul>
+          <div class="cta"><a class="btn" href="beta.html">Choose Elite</a></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="compare">
+      <table aria-label="Feature comparison">
+        <thead>
+          <tr>
+            <th scope="col">Feature</th>
+            <th scope="col" style="text-align:center">Basic<br><span class="small">$20/mo</span></th>
+            <th scope="col" style="text-align:center">Pro<br><span class="small">$55/mo</span></th>
+            <th scope="col" style="text-align:center">Elite<br><span class="small">$80/mo</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Team View core (ATS, PPG/PA, volatility)</th><td>✔</td><td>✔</td><td>✔</td></tr>
+          <tr><th scope="row">Market View basics</th><td>✔</td><td>✔</td><td>✔</td></tr>
+          <tr><th scope="row">Streaks & momentum</th><td>✔</td><td>✔</td><td>✔</td></tr>
+          <tr><th scope="row">Situational splits (H/A, Fav/Dog, Rest)</th><td></td><td>✔</td><td>✔</td></tr>
+          <tr><th scope="row">Distribution charts</th><td></td><td>✔</td><td>✔</td></tr>
+          <tr><th scope="row">Combo Builder (EV)</th><td></td><td>✔</td><td>✔</td></tr>
+          <tr><th scope="row">Fair-Value Line (model vs market)</th><td></td><td></td><td>✔</td></tr>
+          <tr><th scope="row">Line movement & CLV tracking</th><td></td><td></td><td>✔</td></tr>
+          <tr><th scope="row">Portfolio / Bankroll tracker</th><td></td><td></td><td>✔</td></tr>
+        </tbody>
+      </table>
+
+      <div class="cta" style="justify-content:center">
+        <a class="btn" href="beta.html">Apply for Beta</a>
+        <a class="btn ghost" href="index.html#features">See Features</a>
+      </div>
+      <p class="small" style="text-align:center;margin-top:10px">No payment collected now. Pay only when we go live.</p>
+    </section>
+  </main>
+
+  <footer class="wrap" style="border-top:1px solid var(--border);margin-top:40px;color:#8fa3bd;font-size:14px;display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between">
+    <div>© <span id="y"></span> Calculated Risk • Play responsibly</div>
+    <div style="display:flex;gap:16px">
+      <a href="privacy.html">Privacy</a><span>•</span><a href="terms.html">Terms</a>
+    </div>
+  </footer>
+
+  <script>document.getElementById('y').textContent=new Date().getFullYear()</script>
+</body>
+</html>

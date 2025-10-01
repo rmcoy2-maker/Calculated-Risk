@@ -1,89 +1,74 @@
-<!-- index.html snippet -->
-<section id="beta-invite" class="hero bg-gray-900 text-white text-center py-20">
-  <h2 class="text-4xl font-bold mb-6">Be the First to Test Calculated Risk</h2>
-  <p class="text-lg mb-8">Join our closed beta and help shape the sharpest edge in the game.</p>
-  <a href="beta.html" class="bg-green-500 hover:bg-green-600 text-white font-semibold px-8 py-3 rounded-2xl shadow-lg transition">Apply for Beta</a>
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Calculated Risk — Edge Finder</title>
+<meta property="og:title" content="Calculated Risk — Edge Finder"/>
+<meta property="og:description" content="Betting analytics, line shopping, and ghost parlays."/>
+<meta property="og:image" content="assets/hero.png"/>
+<link rel="icon" href="assets/logo.png"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>.glass{backdrop-filter:blur(10px);background:rgba(15,23,42,.55)}</style>
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased">
+<header class="sticky top-0 z-50 bg-slate-950/80 backdrop-blur border-b border-slate-900">
+  <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
+    <a href="./" class="flex items-center gap-3">
+      <img src="assets/logo.png" alt="Calculated Risk" class="h-9 w-9 rounded-xl ring-1 ring-white/10 bg-white/95 p-1">
+      <span class="font-semibold tracking-wide">Calculated Risk</span>
+    </a>
+    <nav class="hidden md:flex items-center gap-6 text-sm">
+      <a href="index.html#features" class="hover:text-white/90 text-slate-300">Features</a>
+      <a href="features.html" class="hover:text-white/90 text-slate-300">Compare Plans</a>
+    </nav>
+  </div>
+</header>
+
+<section class="relative">
+  <img src="assets/hero.png" alt="Edge Finder dashboard" class="w-full h-[420px] object-cover object-center opacity-80">
+  <div class="absolute inset-0 flex items-center">
+    <div class="mx-auto max-w-7xl px-6">
+      <div class="glass rounded-3xl p-8 md:p-12 ring-1 ring-white/10">
+        <h1 class="text-3xl md:text-5xl font-bold">Edge Finder</h1>
+        <p class="mt-3 text-slate-300 max-w-2xl">Line shopping, EV calc, and Ghost Parlay tools to squeeze every bit of value.</p>
+        <div class="mt-6 flex flex-wrap gap-3">
+          <a href="features.html" class="inline-flex items-center justify-center px-5 py-3 rounded-2xl bg-white text-slate-900 font-medium hover:bg-slate-200 transition">See Plans & Features</a>
+          <a href="#shots" class="inline-flex items-center justify-center px-5 py-3 rounded-2xl ring-1 ring-white/15 hover:ring-white/40 transition">Product Shots</a>
+        </div>
+      </div>
+    </div>
+  </div>
 </section>
 
-<!-- beta.html full polished landing page -->
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Calculated Risk — Beta Signup</title>
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-</head>
-<body class="bg-gray-100 text-gray-900">
-  <header class="bg-green-600 text-white py-6 text-center shadow">
-    <h1 class="text-3xl font-bold">Calculated Risk Beta Program</h1>
-    <p class="mt-2 text-lg">Odds in your favor, not the house’s.</p>
-  </header>
+<section id="features" class="mx-auto max-w-7xl px-6 py-16">
+  <div class="grid md:grid-cols-3 gap-6">
+    <div class="rounded-2xl glass p-6 ring-1 ring-white/10"><h3 class="text-lg font-semibold">Line Shop</h3><p class="mt-2 text-slate-300">Compare prices across books and auto-highlight the best lines.</p></div>
+    <div class="rounded-2xl glass p-6 ring-1 ring-white/10"><h3 class="text-lg font-semibold">Parlay EV</h3><p class="mt-2 text-slate-300">Estimate expected value and calibrate legs with live/archived data.</p></div>
+    <div class="rounded-2xl glass p-6 ring-1 ring-white/10"><h3 class="text-lg font-semibold">Ghost Parlay</h3><p class="mt-2 text-slate-300">Shadow your “ideal” parlay and compare to live book offerings.</p></div>
+  </div>
+</section>
 
-  <main class="max-w-4xl mx-auto py-12 px-6">
-    <!-- Intro -->
-    <section class="mb-12 text-center">
-      <h2 class="text-2xl font-bold mb-4">Help Shape the Future</h2>
-      <p class="text-lg">We’re recruiting a diverse group of testers to join our closed beta. Early access, direct feedback, and the chance to influence features before launch.</p>
-    </section>
+<section id="shots" class="bg-slate-950 border-t border-slate-900">
+  <div class="mx-auto max-w-7xl px-6 py-16">
+    <h2 class="text-2xl font-semibold">Screenshots</h2>
+    <p class="mt-2 text-slate-300">A peek at the UI you’ll use every day.</p>
+    <div class="mt-8 grid gap-6 md:grid-cols-3">
+      <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
+        <img src="assets/shot1.png" alt="Line Shop" class="w-full h-64 object-cover">
+        <figcaption class="px-4 py-3 text-sm text-slate-300">Line Shop</figcaption>
+      </figure>
+      <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
+        <img src="assets/shot2.png" alt="Parlay EV" class="w-full h-64 object-cover">
+        <figcaption class="px-4 py-3 text-sm text-slate-300">Parlay EV</figcaption>
+      </figure>
+      <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
+        <img src="assets/shot3.png" alt="Ghost Parlay" class="w-full h-64 object-cover">
+        <figcaption class="px-4 py-3 text-sm text-slate-300">Ghost Parlay</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
 
-    <!-- Tiers -->
-    <section class="grid md:grid-cols-3 gap-8 mb-12">
-      <div class="bg-white p-6 rounded-2xl shadow text-center">
-        <h3 class="text-xl font-bold mb-2">Rookie</h3>
-        <p>New to sports analytics. Focused on simple insights, clean visuals, and learning the ropes.</p>
-      </div>
-      <div class="bg-white p-6 rounded-2xl shadow text-center">
-        <h3 class="text-xl font-bold mb-2">Pro</h3>
-        <p>Comfortable with lines, stats, and analysis. Wants deeper analytics and backtests.</p>
-      </div>
-      <div class="bg-white p-6 rounded-2xl shadow text-center">
-        <h3 class="text-xl font-bold mb-2">Hall of Fame</h3>
-        <p>Advanced users — coders, DFS grinders, sharps. Looking for full unlocks and customization.</p>
-      </div>
-    </section>
-
-    <!-- Access IDs -->
-    <section class="mb-12">
-      <h2 class="text-2xl font-bold mb-4">Anonymized Access</h2>
-      <p>Each tester receives a unique ID (e.g., <code>betauser_01</code>) so we can track feature usage and feedback without collecting personal identifiers.</p>
-    </section>
-
-    <!-- Timeline -->
-    <section class="mb-12">
-      <h2 class="text-2xl font-bold mb-4">Beta Timeline</h2>
-      <ul class="list-disc ml-6 text-lg">
-        <li><strong>Start:</strong> Rolling invites</li>
-        <li><strong>Cutoff:</strong> January 9 (Week 18, before playoffs)</li>
-      </ul>
-      <p class="mt-2">Access expires after cutoff so we can retool and prepare for launch.</p>
-    </section>
-
-    <!-- Perks -->
-    <section class="mb-12 grid md:grid-cols-3 gap-8 text-center">
-      <div class="bg-green-50 p-6 rounded-2xl shadow">
-        <h3 class="font-bold mb-2">Early Access</h3>
-        <p>Try features before anyone else.</p>
-      </div>
-      <div class="bg-green-50 p-6 rounded-2xl shadow">
-        <h3 class="font-bold mb-2">Recognition</h3>
-        <p>Be named a Founding Tester.</p>
-      </div>
-      <div class="bg-green-50 p-6 rounded-2xl shadow">
-        <h3 class="font-bold mb-2">Priority</h3>
-        <p>Consideration for extended Pro/HOF access.</p>
-      </div>
-    </section>
-
-    <!-- Signup Form Embed -->
-    <section class="text-center">
-      <h2 class="text-2xl font-bold mb-6">Apply Now</h2>
-      <iframe src="https://docs.google.com/forms/d/e/1FAIpQLScEUJkbpOWIBmtWpkVnQ4MEoX2baxwFRuy06B-ZQ8UlQEmuew/viewform?embedded=true" width="100%" height="800" frameborder="0" marginheight="0" marginwidth="0">Loading…</iframe>
-    </section>
-  </main>
-
-  <footer class="bg-gray-800 text-white text-center py-6 mt-12">
-    <p>&copy; 2025 Calculated Risk. All rights reserved.</p>
-  </footer>
-</body>
-</html>
+<footer class="border-t border-slate-900">
+  <div class="mx-auto max-w-7xl px-6 py-10 text-sm text-slate-400">© <span id="y"></span> Calculated Risk. All rights reserved.</div>
+</footer>
+<script>document.getElementById('y').textContent=new Date().getFullYear();</script>
+</body></html>
