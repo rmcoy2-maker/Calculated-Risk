@@ -1,144 +1,178 @@
-<!doctype html><html lang="en"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Calculated Risk — Plans & Features</title>
-<meta property="og:title" content="Calculated Risk — Plans & Features"/>
-<meta property="og:description" content="Compare Basic, Pro, and Elite."/>
-<link rel="icon" href="assets/logo.png"/>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>.glass{backdrop-filter:blur(10px);background:rgba(15,23,42,.55)}</style>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Calculated Risk — Plan Comparison</title>
+  <meta name="description" content="Compare Basic, Pro, and Elite plans for Calculated Risk." />
+  <link rel="icon" href="/assets/logo.png" />
+  <style>
+    :root{
+      --bg:#0b1520;--card:#111b29;--muted:#98a2b3;--text:#e6edf6;--brand:#2ecc71;--border:#22324a;--ink:#d1e3ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(1000px 600px at 15% 0%, #0f2536 0%, var(--bg) 45%) fixed;color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1200px;margin:0 auto;padding:28px 20px}
+    .topbar{display:flex;align-items:center;gap:14px}
+    .logo{width:28px;height:28px;border-radius:8px;background:#0f2a1a url('/assets/logo.png') center/cover no-repeat}
+    .nav{margin-left:auto;display:flex;gap:22px}
+    h1{font-weight:800;font-size:36px;margin:10px 0 6px}
+    p.muted{color:var(--muted)}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px}
+    .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
+    .pbox{padding:20px}
+    .pbox h3{margin:0 0 6px}
+    .price{font-size:34px;font-weight:800;margin:8px 0}
+    .small{font-size:13px;color:var(--muted)}
+    .tag{display:inline-block;background:#1a2c1f;border:1px solid #254d35;color:#baf3d0;padding:4px 8px;border-radius:999px;font-size:12px;margin-left:6px}
+    .best{background:#1f2a40;border-color:#33508a;color:#d1e3ff}
+    ul.feats{margin:10px 0 0;padding:0 0 0 18px;color:#cfe0ff}
+
+    /* comparison table */
+    table{width:100%;border-collapse:separate;border-spacing:0 10px;margin:24px 0}
+    thead th{font-size:14px;color:#cfe0ff;text-align:left;padding:8px 10px}
+    tbody td, tbody th{background:var(--card);border:1px solid var(--border);padding:12px 10px}
+    tbody th{border-right:none;border-radius:12px 0 0 12px;width:38%}
+    tbody td{border-left:none;text-align:center}
+    tbody td:first-of-type{border-left:1px solid var(--border)}
+    tbody td:last-of-type{border-radius:0 12px 12px 0}
+
+    .cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+    .btn{background:#1f6f3f;color:#fff;padding:10px 16px;border-radius:10px;border:1px solid #194d31;cursor:pointer;font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid #394b6a;color:#cfe0ff}
+
+    @media (max-width:980px){
+      .plans{grid-template-columns:1fr}
+      table{font-size:14px}
+      tbody th{width:auto}
+    }
+  </style>
 </head>
-<body class="bg-slate-950 text-slate-100 antialiased">
-  <!-- Header -->
-  <header class="sticky top-0 z-50 bg-slate-950/80 backdrop-blur border-b border-slate-900">
-    <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
-      <a href="index.html" class="flex items-center gap-3">
-        <img src="assets/logo.png" alt="Calculated Risk" class="h-9 w-9 rounded-xl ring-1 ring-white/10 bg-white/95 p-1">
-        <span class="font-semibold tracking-wide">Calculated Risk</span>
-      </a>
-      <nav class="hidden md:flex items-center gap-6 text-sm">
-        <a href="index.html#features" class="hover:text-white/90 text-slate-300">Features</a>
-        <a href="features.html" class="hover:text-white/90 text-slate-300">Compare Plans</a>
-      </nav>
-    </div>
+<body>
+  <header class="wrap topbar">
+    <div class="logo" aria-label="Calculated Risk"></div>
+    <strong>Calculated Risk</strong>
+    <nav class="nav">
+      <a href="index.html">Home</a>
+      <a href="#compare">Compare Plans</a>
+      <a href="beta.html">Join Beta</a>
+    </nav>
   </header>
 
-  <!-- Title -->
-  <section class="mx-auto max-w-7xl px-6 pt-10 pb-6">
-    <h1 class="text-3xl md:text-4xl font-bold">Plans & Features</h1>
-    <p class="mt-3 text-slate-300 max-w-2xl">Everything in one place: line shopping, EV tools, and Ghost Parlay.</p>
-  </section>
+  <main class="wrap">
+    <section>
+      <h1>Compare Plans</h1>
+      <p class="muted">Pricing kept in sync with the homepage. Annual plans reflect ≈17% savings vs paying monthly.</p>
 
-  <!-- Pricing + Features (editable HTML table) -->
-  <section class="mx-auto max-w-7xl px-6 pb-16">
-    <div class="overflow-x-auto rounded-3xl ring-1 ring-white/10 glass">
-      <table class="min-w-full text-sm">
-        <thead class="bg-slate-900/70">
+      <!-- Plan cards (match index.html pricing/features) -->
+      <div class="plans">
+        <div class="card pbox">
+          <h3>Basic</h3>
+          <div class="price">$20<span class="small">/mo</span></div>
+          <div class="small">or $200/yr <span class="muted">(≈17% off)</span></div>
+          <ul class="feats">
+            <li>Team View core (ATS, PPG/PA, volatility)</li>
+            <li>Market View basics</li>
+            <li>Streaks & momentum</li>
+          </ul>
+          <div class="cta"><a class="btn" href="#compare">Choose Basic</a></div>
+        </div>
+
+        <div class="card pbox">
+          <h3>Pro <span class="tag best">Best Value</span></h3>
+          <div class="price">$55<span class="small">/mo</span></div>
+          <div class="small">or $550/yr <span class="muted">(≈17% off)</span></div>
+          <ul class="feats">
+            <li>Situational splits (H/A, Fav/Dog, Rest)</li>
+            <li>Distribution charts</li>
+            <li>Parlay Builder (EV)</li>
+          </ul>
+          <div class="cta"><a class="btn" href="#compare">Choose Pro</a></div>
+        </div>
+
+        <div class="card pbox">
+          <h3>Elite <span class="tag">New</span></h3>
+          <div class="price">$80<span class="small">/mo</span></div>
+          <div class="small">or $800/yr <span class="muted">(≈17% off)</span></div>
+          <ul class="feats">
+            <li>Fair-Value Line (model vs market)</li>
+            <li>Line movement & CLV tracking</li>
+            <li>Portfolio / Bankroll tracker</li>
+          </ul>
+          <div class="cta"><a class="btn" href="#compare">Choose Elite</a></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Detailed comparison table -->
+    <section id="compare">
+      <table aria-label="Feature comparison">
+        <thead>
           <tr>
-            <th class="px-4 py-4 text-left text-slate-200">Feature</th>
-            <th class="px-4 py-4 text-left">
-              <div class="font-semibold">Basic</div>
-              <div class="text-slate-300">$20/mo</div>
-            </th>
-            <th class="px-4 py-4 text-left">
-              <div class="font-semibold">Pro</div>
-              <div class="text-slate-300">$55/mo • $550/yr <span class="text-xs">(≈17% off)</span></div>
-            </th>
-            <th class="px-4 py-4 text-left">
-              <div class="font-semibold">Elite</div>
-              <div class="text-slate-300">$80/mo • $800/yr <span class="text-xs">(≈17% off)</span></div>
-            </th>
+            <th scope="col">Feature</th>
+            <th scope="col" style="text-align:center">Basic<br><span class="small">$20/mo</span></th>
+            <th scope="col" style="text-align:center">Pro<br><span class="small">$55/mo</span></th>
+            <th scope="col" style="text-align:center">Elite<br><span class="small">$80/mo</span></th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-800">
+        <tbody>
           <tr>
-            <td class="px-4 py-3">Team View (W/L, ATS, PPG/PA)</td>
-            <td class="px-4 py-3">✓ (Monthly only)</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Team View core (ATS, PPG/PA, volatility)</th>
+            <td>✔</td><td>✔</td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Market View (basic matchup)</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Market View basics</th>
+            <td>✔</td><td>✔</td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Streaks & Momentum</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Streaks & momentum</th>
+            <td>✔</td><td>✔</td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Distribution (histograms)</td>
-            <td class="px-4 py-3">Basic</td>
-            <td class="px-4 py-3">Expanded</td>
-            <td class="px-4 py-3">Expanded</td>
+            <th scope="row">Situational splits (H/A, Fav/Dog, Rest)</th>
+            <td></td><td>✔</td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Consistency Index</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Distribution charts</th>
+            <td></td><td>✔</td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Situational Splits (H/A, Fav/Dog, Rest)</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Parlay Builder (EV)</th>
+            <td></td><td>✔</td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Parlay Builder (EV)</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">Advanced</td>
+            <th scope="row">Fair-Value Line (model vs market)</th>
+            <td></td><td></td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Fair Value Line (model vs market)</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Line movement & CLV tracking</th>
+            <td></td><td></td><td>✔</td>
           </tr>
           <tr>
-            <td class="px-4 py-3">Line Movement & CLV Tracking</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Portfolio / Bankroll Tracker</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
+            <th scope="row">Portfolio / Bankroll tracker</th>
+            <td></td><td></td><td>✔</td>
           </tr>
         </tbody>
       </table>
-    </div>
-    <p class="mt-3 text-xs text-slate-500">Annual plans reflect ≈17% savings vs paying monthly.</p>
-  </section>
 
-  <!-- Product shots (unchanged) -->
-  <section class="bg-slate-950 border-t border-slate-900">
-    <div class="mx-auto max-w-7xl px-6 py-16">
-      <h2 class="text-2xl font-semibold">Product Shots</h2>
-      <div class="mt-8 grid gap-6 md:grid-cols-3">
-        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
-          <img src="assets/shot1.png" alt="Line Shop" class="w-full h-64 object-cover">
-          <figcaption class="px-4 py-3 text-sm text-slate-300">Line Shop</figcaption>
-        </figure>
-        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
-          <img src="assets/shot2.png" alt="Parlay EV" class="w-full h-64 object-cover">
-          <figcaption class="px-4 py-3 text-sm text-slate-300">Parlay EV</figcaption>
-        </figure>
-        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
-          <img src="assets/shot3.png" alt="Ghost Parlay" class="w-full h-64 object-cover">
-          <figcaption class="px-4 py-3 text-sm text-slate-300">Ghost Parlay</figcaption>
-        </figure>
+      <div class="cta" style="justify-content:center">
+        <a class="btn" href="index.html#preorder">Join the Waitlist</a>
+        <a class="btn ghost" href="beta.html">Apply for Beta</a>
       </div>
-    </div>
-  </section>
+      <p class="small" style="text-align:center;margin-top:10px">No payment collected now. Pay only when we go live.</p>
+    </section>
+  </main>
 
-  <footer class="border-t border-slate-900">
-    <div class="mx-auto max-w-7xl px-6 py-10 text-sm text-slate-400">© <span id="y"></span> Calculated Risk. All rights reserved.</div>
+  <footer class="wrap" style="border-top:1px solid var(--border);margin-top:40px;color:#8fa3bd;font-size:14px;display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between">
+    <div>© <span id="y"></span> Calculated Risk • Play responsibly</div>
+    <div style="display:flex;gap:16px">
+      <a href="privacy.html">Privacy</a>
+      <span>•</span>
+      <a href="terms.html">Terms</a>
+    </div>
   </footer>
-  <script>document.getElementById('y').textContent=new Date().getFullYear();</script>
-</body></html>
+
+  <script>document.getElementById('y').textContent=new Date().getFullYear()</script>
+</body>
+</html>

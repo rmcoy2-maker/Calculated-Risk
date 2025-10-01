@@ -1,0 +1,123 @@
+<!-- index.html snippet -->
+<section id="beta-invite" class="hero bg-cr-dark text-white text-center py-20">
+  <h2 class="text-4xl font-extrabold mb-4 tracking-tight">Be the First to Test Calculated Risk</h2>
+  <p class="text-lg opacity-90 max-w-2xl mx-auto mb-10">Join our closed beta and help shape the sharpest edge in the game.</p>
+  <a href="beta.html" class="btn-primary">Apply for Beta</a>
+</section>
+
+<!-- beta.html full polished landing page -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Calculated Risk — Beta Signup</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --cr-green: #10B981; /* emerald-500 */
+      --cr-green-600: #059669;
+      --cr-accent: #22C55E; /* lime-ish accent */
+      --cr-dark: #0B1220;   /* deep navy */
+      --cr-card: #0f172a0d; /* subtle slate overlay */
+    }
+    html, body { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .btn-primary {
+      display:inline-block; padding:0.85rem 1.5rem; border-radius:1rem; font-weight:700;
+      background: linear-gradient(135deg, var(--cr-green), var(--cr-accent)); color:#fff;
+      box-shadow: 0 10px 25px rgba(16,185,129,0.25); transition: transform .15s ease, box-shadow .2s ease; }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 14px 30px rgba(16,185,129,0.35); }
+    .btn-primary:active { transform: translateY(0); }
+    .badge { display:inline-block; padding: .25rem .6rem; border-radius:.6rem; font-size:.75rem; font-weight:600; background:#ecfdf5; color:#065f46; }
+    .section { background:#fff; border-radius:1.25rem; box-shadow: 0 6px 24px rgba(2,6,23,0.06); }
+    .bg-cr-dark { background: var(--cr-dark); }
+  </style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+  <header class="bg-white border-b border-gray-100">
+  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <img src="assets/logo.png" alt="Calculated Risk" class="h-10 w-10 rounded-lg shadow" onerror="this.style.display='none'">
+      <div>
+        <p class="text-xs uppercase tracking-widest text-gray-500">Beta Program</p>
+        <h1 class="text-2xl font-extrabold">Calculated Risk</h1>
+      </div>
+    </div>
+    <nav class="hidden md:flex items-center gap-4">
+      <a href="/" class="text-gray-600 hover:text-gray-900">Home</a>
+      <a href="#apply" class="btn-primary">Apply Now</a>
+    </nav>
+  </div>
+</header>
+
+  <main class="max-w-6xl mx-auto py-12 px-6">
+    <!-- Intro -->
+    <section class="mb-12 text-center section p-10">
+      <span class="badge">Closed Beta</span>
+      <h2 class="text-3xl font-extrabold mb-4 mt-3 tracking-tight">Help Shape the Future</h2>
+      <p class="text-lg text-gray-700 max-w-3xl mx-auto">We’re recruiting a diverse group of testers to join our closed beta. Early access, direct feedback, and the chance to influence features before launch.</p>
+    </section>
+
+    <!-- Tiers -->
+    <section class="grid md:grid-cols-3 gap-8 mb-12">
+      <div class="bg-white p-6 rounded-2xl shadow text-center border border-gray-100">
+        <h3 class="text-xl font-bold mb-2">Rookie</h3>
+        <p class="text-gray-700">New to sports analytics. Focused on simple insights, clean visuals, and learning the ropes.</p>
+      </div>
+      <div class="bg-white p-6 rounded-2xl shadow text-center border border-gray-100">
+        <h3 class="text-xl font-bold mb-2">Pro</h3>
+        <p class="text-gray-700">Comfortable with lines, stats, and analysis. Wants deeper analytics and backtests.</p>
+      </div>
+      <div class="bg-white p-6 rounded-2xl shadow text-center border border-gray-100">
+        <h3 class="text-xl font-bold mb-2">Hall of Fame</h3>
+        <p class="text-gray-700">Advanced users — coders, DFS grinders, sharps. Looking for full unlocks and customization.</p>
+      </div>
+    </section>
+
+    <!-- Access IDs -->
+    <section class="mb-12 section p-8">
+      <h2 class="text-2xl font-extrabold mb-3">Anonymized Access</h2>
+      <p class="text-gray-700">Each tester receives a unique ID (e.g., <code>betauser_01</code>) so we can track feature usage and feedback without collecting personal identifiers.</p>
+    </section>
+
+    <!-- Timeline -->
+    <section class="mb-12 section p-8">
+      <h2 class="text-2xl font-extrabold mb-4">Beta Timeline</h2>
+      <ul class="list-disc ml-6 text-lg text-gray-800">
+        <li><strong>Start:</strong> Rolling invites</li>
+        <li><strong>Cutoff:</strong> January 9 (Week 18, before playoffs)</li>
+      </ul>
+      <p class="mt-2 text-gray-700">Access expires after cutoff so we can retool and prepare for launch.</p>
+    </section>
+
+    <!-- Perks -->
+    <section class="mb-12 grid md:grid-cols-3 gap-8 text-center">
+      <div class="bg-green-50 p-6 rounded-2xl shadow">
+        <h3 class="font-bold mb-2">Early Access</h3>
+        <p>Try features before anyone else.</p>
+      </div>
+      <div class="bg-green-50 p-6 rounded-2xl shadow">
+        <h3 class="font-bold mb-2">Recognition</h3>
+        <p>Be named a Founding Tester.</p>
+      </div>
+      <div class="bg-green-50 p-6 rounded-2xl shadow">
+        <h3 class="font-bold mb-2">Priority</h3>
+        <p>Consideration for extended Pro/HOF access.</p>
+      </div>
+    </section>
+
+    <!-- Signup Form Embed -->
+    <section id="apply" class="text-center section p-10">
+      <h2 class="text-2xl font-extrabold mb-6">Apply Now</h2>
+      <iframe src="https://docs.google.com/forms/d/e/1FAIpQLScEUJkbpOWIBmtWpkVnQ4MEoX2baxwFRuy06B-ZQ8UlQEmuew/viewform?embedded=true" width="100%" height="800" frameborder="0" marginheight="0" marginwidth="0">Loading…</iframe>
+    </section>
+  </main>
+
+  <footer class="bg-gray-800 text-white text-center py-6 mt-12">
+    <p>&copy; 2025 Calculated Risk. All rights reserved.</p>
+  </footer>
+</body>
+</html>
