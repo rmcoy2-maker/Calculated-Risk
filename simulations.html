@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simulations — Calculated Risk</title>
+  <meta name="description" content="Calculated Risk — sports analytics. We are not a sportsbook." />
+  <link rel="icon" href="/assets/logo.png" />
+  <style>
+    :root { --bg:#0b1520; --card:#111b29; --muted:#98a2b3; --text:#e6edf6; --brand:#2ecc71; --border:#22324a; }
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(1000px 600px at 15% 0%, #0f2536 0%, var(--bg) 45%) fixed;color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1200px;margin:0 auto;padding:28px 20px}
+    .topbar{display:flex;align-items:center;gap:14px}
+    .nav{margin-left:auto;display:flex;gap:22px}
+    .banner{background:#0f1f33;color:#cfe0ff;padding:8px 14px;text-align:center;font-size:14px;border-bottom:1px solid #1e2f4a}
+    .biglogo{display:flex;align-items:center;gap:14px}
+    .biglogo img{height:82px;width:auto;border-radius:12px;box-shadow:0 0 0 1px #1f3b2a}
+    .footer{margin:60px 0 24px;color:#8fa3bd;font-size:14px;text-align:center}
+    .prose p{color:#c7d3e1}
+    .btn{background:#1f6f3f;color:#fff;padding:10px 16px;border-radius:10px;border:1px solid #194d31;cursor:pointer;font-weight:600}
+    .btn.sec{background:transparent;border-color:#2a3b55;color:#dbe7f7}
+    .small{font-size:13px;color:#98a2b3}
+    .grid{display:grid;gap:16px}
+    .grid.g3{grid-template-columns:repeat(3,1fr)}
+    .card{background:#0b1321;border:1px solid var(--border);border-radius:16px;padding:18px}
+    @media (max-width:980px){ .grid.g3{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="banner">Calculated Risk provides sports <strong>analytics</strong> for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</div>
+  <header class="wrap topbar">
+    <a class="biglogo" href="/assets/qr_calculatedrisk.png" target="_blank" rel="noopener">
+      <img src="/assets/logo.png" alt="Calculated Risk — open QR" />
+      <strong>Calculated Risk</strong>
+    </a>
+    <nav class="nav">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="pricing.html">Compare Plans</a>
+      <a href="simulations.html">Simulations</a>
+      <a href="beta.html">Join Beta</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    
+  <h1>Simulations & Media</h1>
+  <p class="small">A single place for visuals, mockups, and the scannable QR.</p>
+  <div class="grid g3" style="margin-top:18px">
+    <div class="card"><img src="assets/hero.png" alt="Hero" style="width:100%;border-radius:10px"><p class="small" style="margin-top:8px">Hero banner</p></div>
+    <div class="card"><img src="assets/shot1.png" alt="Shot 1" style="width:100%;border-radius:10px"><p class="small" style="margin-top:8px">Line Shop</p></div>
+    <div class="card"><img src="assets/shot2.png" alt="Shot 2" style="width:100%;border-radius:10px"><p class="small" style="margin-top:8px">EV Comparisons</p></div>
+    <div class="card"><img src="assets/shot3.png" alt="Shot 3" style="width:100%;border-radius:10px"><p class="small" style="margin-top:8px">Ghost Combo</p></div>
+    <div class="card"><img src="assets/features.png" alt="Features (optional)" style="width:100%;border-radius:10px"><p class="small" style="margin-top:8px">Features graphic (optional)</p></div>
+    <div class="card" style="text-align:center">
+      <a href="assets/qr_calculatedrisk.png" target="_blank" rel="noopener"><img src="assets/qr_calculatedrisk.png" alt="QR to Calculated Risk" style="width:220px;height:auto;border-radius:12px"></a>
+      <p class="small" style="margin-top:8px"><a class="btn sec" href="assets/qr_calculatedrisk.png" download>Download QR</a></p>
+    </div>
+  </div>
+
+  </main>
+
+  <div class="wrap footer">© <span id="y"></span> Calculated Risk • Play responsibly</div>
+  <script>document.getElementById('y').textContent = new Date().getFullYear()</script>
+</body>
+</html>

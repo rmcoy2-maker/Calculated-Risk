@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Calculated Risk — Edge Finder</title>
+  <meta property="og:title" content="Calculated Risk — Edge Finder"/>
+  <meta property="og:description" content="Betting analytics, line shopping, and ghost parlays."/>
+  <meta property="og:image" content="assets/hero.png"/>
+  <link rel="icon" href="assets/logo.png"/>
+  <!-- Tailwind CDN (works fine for static hosting; requires internet when previewing locally) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>.glass{backdrop-filter:blur(10px);background:rgba(15,23,42,.55)}</style>
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased">
+
+  <!-- Header -->
+  <header class="sticky top-0 z-50 bg-slate-950/80 backdrop-blur border-b border-slate-900">
+    <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
+      <a href="./" class="flex items-center gap-3">
+        <img src="assets/logo.png" alt="Calculated Risk" class="h-9 w-9 rounded-xl ring-1 ring-white/10 bg-white/95 p-1">
+        <span class="font-semibold tracking-wide">Calculated Risk</span>
+      </a>
+      <nav class="hidden md:flex items-center gap-6 text-sm">
+        <a href="index.html#features" class="hover:text-white/90 text-slate-300">Features</a>
+        <a href="features.html" class="hover:text-white/90 text-slate-300">Compare Plans</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- HERO: Logo (left) • App blurb (center) • Image01 (right) -->
+  <section class="bg-slate-950">
+    <div class="mx-auto max-w-7xl px-6 py-12">
+      <div class="grid items-center gap-8 md:grid-cols-3">
+        <!-- Left: Logo -->
+        <div class="flex md:justify-start justify-center">
+          <a href="./" class="flex items-center gap-3">
+            <img src="assets/logo.png" alt="Calculated Risk" class="h-16 w-16 rounded-2xl ring-1 ring-white/10 bg-white/95 p-2">
+            <span class="text-xl font-semibold tracking-wide">Calculated Risk</span>
+          </a>
+        </div>
+
+        <!-- Middle: App blurb -->
+        <div class="rounded-3xl p-6 ring-1 ring-white/10 bg-white/5 backdrop-blur">
+          <h1 class="text-3xl md:text-4xl font-bold">Edge Finder</h1>
+          <p class="mt-3 text-slate-300">
+            AI-powered sports analytics—line shopping, EV calc, and ghost parlays to squeeze every bit of value.
+          </p>
+          <div class="mt-6 flex flex-wrap gap-3">
+            <a href="features.html" class="inline-flex items-center justify-center px-5 py-3 rounded-2xl bg-white text-slate-900 font-medium hover:bg-slate-200 transition">
+              See Plans & Features
+            </a>
+            <a href="#shots" class="inline-flex items-center justify-center px-5 py-3 rounded-2xl ring-1 ring-white/15 hover:ring-white/40 transition">
+              Product Shots
+            </a>
+          </div>
+        </div>
+
+        <!-- Right: Image01 (fallback to hero.png if missing) -->
+        <div class="flex md:justify-end justify-center">
+          <img
+            src="assets/image01.png"
+            onerror="this.src='assets/hero.png'"
+            alt="App preview"
+            class="w-full max-w-sm rounded-3xl ring-1 ring-white/10 shadow-lg object-cover"
+          />
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="mx-auto max-w-7xl px-6 py-16">
+    <div class="grid md:grid-cols-3 gap-6">
+      <div class="rounded-2xl glass p-6 ring-1 ring-white/10">
+        <h3 class="text-lg font-semibold">Line Shop</h3>
+        <p class="mt-2 text-slate-300">Compare prices across books and auto-highlight the best lines.</p>
+      </div>
+      <div class="rounded-2xl glass p-6 ring-1 ring-white/10">
+        <h3 class="text-lg font-semibold">Parlay EV</h3>
+        <p class="mt-2 text-slate-300">Estimate expected value and calibrate legs with live/archived data.</p>
+      </div>
+      <div class="rounded-2xl glass p-6 ring-1 ring-white/10">
+        <h3 class="text-lg font-semibold">Ghost Parlay</h3>
+        <p class="mt-2 text-slate-300">Shadow your “ideal” parlay and compare to live book offerings.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section id="shots" class="bg-slate-950 border-t border-slate-900">
+    <div class="mx-auto max-w-7xl px-6 py-16">
+      <h2 class="text-2xl font-semibold">Screenshots</h2>
+      <p class="mt-2 text-slate-300">A peek at the UI you’ll use every day.</p>
+      <div class="mt-8 grid gap-6 md:grid-cols-3">
+        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
+          <img src="assets/shot1.png" alt="Line Shop" class="w-full h-64 object-cover">
+          <figcaption class="px-4 py-3 text-sm text-slate-300">Line Shop</figcaption>
+        </figure>
+        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
+          <img src="assets/shot2.png" alt="Parlay EV" class="w-full h-64 object-cover">
+          <figcaption class="px-4 py-3 text-sm text-slate-300">Parlay EV</figcaption>
+        </figure>
+        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
+          <img src="assets/shot3.png" alt="Ghost Parlay" class="w-full h-64 object-cover">
+          <figcaption class="px-4 py-3 text-sm text-slate-300">Ghost Parlay</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-900">
+    <div class="mx-auto max-w-7xl px-6 py-10 text-sm text-slate-400">
+      © <span id="y"></span> Calculated Risk. All rights reserved.
+    </div>
+  </footer>
+
+  <script>document.getElementById('y').textContent=new Date().getFullYear();</script>
+</body>
+</html>
