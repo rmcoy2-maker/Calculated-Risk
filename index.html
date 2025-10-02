@@ -1,14 +1,23 @@
-<!DOCTYPE html><html lang='en'><head>
+<!DOCTYPE html><html lang="en">
+<head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Home • Calculated Risk</title>
+  <title>Calculated Risk</title>
   <meta name="description" content="Calculated Risk — analytics for informational and entertainment purposes. Not a sportsbook.">
-  <meta property="og:title" content="Home • Calculated Risk">
-  <meta property="og:description" content="AI-powered sports analytics — Moneyball for fans and sharps.">
-  <meta property="og:image" content="assets/og-image.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="assets/styles.css">
-  <style>.container{max-width:1100px}</style>
-</head><body class='antialiased text-gray-900 bg-white'><header class="brand-bg text-white">
+  <style>
+    :root{ --brand-green:#00A86B }
+    .brand-bg{ background:linear-gradient(180deg,#0d2331 0%, #121d2a 100%) }
+    .brand-accent-bg{ background:var(--brand-green) }
+    .container{ max-width:1100px }
+    .card{ border:1px solid #e5e7eb; border-radius:1rem }
+    .lightbox-open{ overflow:hidden }
+  </style>
+</head>
+<body class="antialiased text-gray-100 bg-[#0b1a24]">
+
+<!-- NAV -->
+<header class="brand-bg text-white">
   <nav class="container mx-auto px-6">
     <ul class="flex flex-wrap gap-6 items-center py-4">
       <li><a href="index.html" class="hover:text-[var(--brand-green)]">Home</a></li>
@@ -24,31 +33,163 @@
     </ul>
   </nav>
 </header>
-<section class="hero-gradient text-white">
-  <div class="container mx-auto px-6 py-16 md:py-24">
-    <div class="max-w-3xl space-y-6">
-      <img src="assets/logo.png" alt="Calculated Risk logo" class="h-16 md:h-20 object-contain" onerror="this.style.display='none'">
-      <h1 class="text-4xl md:text-5xl font-bold">Calculated Risk</h1>
-      <p class="text-lg opacity-90">“I didn’t just beat the odds — I rearranged them.”</p>
-      <p class="text-sm opacity-80">We are <span class="underline">not</span> a sportsbook.</p>
-      <div class="flex flex-wrap gap-3 pt-3">
-        <a href="login.html" class="px-5 py-3 brand-accent-bg hover:brightness-110 rounded-lg font-semibold">Log In</a>
-        <a href="pricing.html" class="px-5 py-3 bg-white/10 hover:bg-white/20 rounded-lg font-semibold">Pricing</a>
-        <a href="features.html" class="px-5 py-3 bg-white/10 hover:bg-white/20 rounded-lg font-semibold">Features</a>
+
+<!-- HERO -->
+<section class="brand-bg">
+  <div class="container mx-auto px-6 py-16 lg:py-24 grid lg:grid-cols-2 gap-12 items-center">
+    <div>
+      <h1 class="text-5xl font-extrabold tracking-tight text-white">Calculated Risk</h1>
+      <p class="mt-4 text-xl text-gray-200">“I didn’t just beat the odds — I rearranged them.”</p>
+      <p class="mt-2 text-sm text-gray-300">We are <strong>not</strong> a sportsbook.</p>
+
+      <!-- NEW: Season banner -->
+      <div class="mt-6 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 ring-1 ring-white/10">
+        <span class="text-sm font-semibold text-white">Coming for the 2026 Football Season!</span>
       </div>
+
+      <div class="mt-8 flex flex-wrap gap-3">
+        <a href="login.html" class="px-5 py-3 rounded-lg text-white font-semibold brand-accent-bg hover:brightness-110">Log In</a>
+        <a href="pricing.html" class="px-5 py-3 rounded-lg bg-white/10 hover:bg-white/15">Pricing</a>
+        <a href="features.html" class="px-5 py-3 rounded-lg bg-white/10 hover:bg-white/15">Features</a>
+      </div>
+    </div>
+
+    <!-- RIGHT: Logo as shown -->
+    <div class="hidden lg:block">
+      <img src="assets/image01.png" alt="Calculated Risk Logo"
+           class="w-full max-w-xl mx-auto rounded-xl shadow-xl">
     </div>
   </div>
 </section>
-<section class="container mx-auto px-6 py-14 grid md:grid-cols-3 gap-8">
-  <div class="p-6 card bg-white"><h3 class="font-semibold text-lg mb-2">Depth of Insight</h3><p>Unique views for value, matchups, consistency, and more.</p></div>
-  <div class="p-6 card bg-white"><h3 class="font-semibold text-lg mb-2">Priced to Win</h3><p>Rookie ($20), Pro ($55), HOF ($80).</p></div>
-  <div class="p-6 card bg-white"><h3 class="font-semibold text-lg mb-2">Try for a Day</h3><p>24 hours for $5 (once per year, Dec 1–Super Bowl Sunday). <a class="link-accent" href="privacy_terms_services.html#try">Details</a>.</p></div>
-</section>
-<footer class="bg-gray-50 border-t mt-16">
-  <div class="container mx-auto px-6 py-10 text-sm text-gray-600 space-y-2">
+
+<!-- FOOTER -->
+<footer class="bg-[#0c1822] border-t border-white/10 mt-12">
+  <div class="container mx-auto px-6 py-10 text-sm text-gray-400 space-y-2">
     <p>Calculated Risk provides analytics for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</p>
     <p>&copy; 2025 Calculated Risk •
-      <a class="link-accent" href="privacy_terms_services.html">Privacy & Terms</a> •
-      <a class="link-accent" href="mailto:cs@calculatedrisk.group">cs@calculatedrisk.group</a></p>
+      <a class="text-[var(--brand-green)] underline" href="privacy_terms_services.html">Privacy & Terms</a> •
+      <a class="text-[var(--brand-green)] underline" href="mailto:cs@calculatedrisk.group">cs@calculatedrisk.group</a></p>
   </div>
-</footer></body></html>
+</footer>
+
+<!-- AGE + LOCATION GATE (opens on first visit) -->
+<div id="gate" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden">
+  <div class="min-h-full flex items-center justify-center p-6">
+    <div class="card bg-white text-gray-900 w-full max-w-xl p-6">
+      <h2 class="text-2xl font-bold">Quick Check</h2>
+      <p class="mt-1 text-sm text-gray-600">You must be <strong>21+</strong> and physically in the United States to enter. We do not allow access from <strong>ID, NV, WA</strong>.</p>
+
+      <form id="gateForm" class="mt-4 space-y-4">
+        <label class="flex items-start gap-2 text-sm">
+          <input id="age" type="checkbox" class="mt-1">
+          <span>I confirm I am <strong>21 years or older</strong>.</span>
+        </label>
+
+        <div>
+          <label class="block text-sm font-medium">State (US only)</label>
+          <select id="state" class="mt-1 w-full border rounded-lg p-3">
+            <option value="">Select your state</option>
+            <option>AL</option><option>AK</option><option>AZ</option><option>AR</option>
+            <option>CA</option><option>CO</option><option>CT</option><option>DC</option>
+            <option>DE</option><option>FL</option><option>GA</option><option>HI</option>
+            <option>IA</option><option>ID</option><option>IL</option><option>IN</option>
+            <option>KS</option><option>KY</option><option>LA</option><option>MA</option>
+            <option>MD</option><option>ME</option><option>MI</option><option>MN</option>
+            <option>MO</option><option>MS</option><option>MT</option><option>NC</option>
+            <option>ND</option><option>NE</option><option>NH</option><option>NJ</option>
+            <option>NM</option><option>NV</option><option>NY</option><option>OH</option>
+            <option>OK</option><option>OR</option><option>PA</option><option>RI</option>
+            <option>SC</option><option>SD</option><option>TN</option><option>TX</option>
+            <option>UT</option><option>VA</option><option>VT</option><option>WA</option>
+            <option>WI</option><option>WV</option><option>WY</option>
+          </select>
+        </div>
+
+        <p id="gateMsg" class="text-sm"></p>
+
+        <div class="flex justify-end gap-3">
+          <button type="button" id="leaveBtn" class="px-4 py-2 rounded-lg border">Leave</button>
+          <button type="submit" class="px-4 py-2 rounded-lg text-white brand-accent-bg hover:brightness-110">Enter</button>
+        </div>
+
+        <p class="text-xs text-gray-500">We only use this check to comply with our access policy. See <a class="underline" href="privacy_terms_services.html">Privacy & Terms</a>.</p>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  // --- Age/Location Gate Logic ---
+  const gate      = document.getElementById('gate');
+  const form      = document.getElementById('gateForm');
+  const ageBox    = document.getElementById('age');
+  const stateSel  = document.getElementById('state');
+  const msg       = document.getElementById('gateMsg');
+  const leaveBtn  = document.getElementById('leaveBtn');
+
+  const EXCLUDED = new Set(['ID','NV','WA']);
+
+  function openGate(){
+    gate.classList.remove('hidden');
+    document.body.classList.add('lightbox-open');
+  }
+  function closeGate(){
+    gate.classList.add('hidden');
+    document.body.classList.remove('lightbox-open');
+  }
+
+  // Only show once (persist in localStorage)
+  try {
+    if (!localStorage.getItem('cr_gate_ok')) openGate();
+  } catch(e) { openGate(); }
+
+  // Validate state against exclusions
+  stateSel.addEventListener('change', () => {
+    const st = stateSel.value;
+    if (EXCLUDED.has(st)) {
+      msg.textContent = "Access is not available from Idaho (ID), Nevada (NV), or Washington (WA).";
+      msg.className = "text-sm text-red-600";
+    } else {
+      msg.textContent = "";
+      msg.className = "text-sm";
+    }
+  });
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const st = stateSel.value;
+    if (!ageBox.checked) {
+      msg.textContent = "Please confirm you are 21+.";
+      msg.className = "text-sm text-red-600";
+      return;
+    }
+    if (!st) {
+      msg.textContent = "Please select your US state.";
+      msg.className = "text-sm text-red-600";
+      return;
+    }
+    if (EXCLUDED.has(st)) {
+      msg.textContent = "Sorry — we don’t allow access from ID, NV, or WA.";
+      msg.className = "text-sm text-red-600";
+      return;
+    }
+    // Passed
+    try { localStorage.setItem('cr_gate_ok','1'); } catch(e){}
+    closeGate();
+  });
+
+  leaveBtn.addEventListener('click', () => {
+    window.location.href = "https://www.google.com/";
+  });
+</script>
+
+<noscript>
+  <div style="position:fixed;inset:0;background:#000a;color:#fff;display:flex;align-items:center;justify-content:center;z-index:99999;padding:2rem;">
+    <div style="max-width:560px;background:#111;color:#eee;padding:1.25rem;border-radius:12px;border:1px solid #333;">
+      <h2>Access Check</h2>
+      <p>You must be 21+ and in the United States (not in ID, NV, WA) to view this site. Please enable JavaScript to continue.</p>
+    </div>
+  </div>
+</noscript>
+
+</body></html>
