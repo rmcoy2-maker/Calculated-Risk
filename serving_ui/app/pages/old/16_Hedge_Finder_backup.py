@@ -1,0 +1,167 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+from itertools import combinations
+from pathlib import Path
+import pandas as pd
+import numpy as np
+from tools.lines_shop_io import read_latest_shop
+st.set_page_config(page_title='Hedge Finder', layout='wide')
+
+
+
+
+# === Nudge+Session (auto-injected) ===
+try:
+    from app.utils.nudge import begin_session, touch_session, session_duration_str, bump_usage, show_nudge  # type: ignore
+except Exception:
+    def begin_session(): pass
+    def touch_session(): pass
+    def session_duration_str(): return ""
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Initialize/refresh session and show live duration
+begin_session()
+touch_session()
+if hasattr(st, "sidebar"):
+    st.sidebar.caption(f"🕒 Session: {session_duration_str()}")
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Optional upsell banner after threshold interactions in last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge+Session (auto-injected) ===
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+st.subheader('Hedge Finder')
+
+@st.cache_data(show_spinner=False)
+def load_lines() -> pd.DataFrame:
+    df = read_latest_shop()
+    if df.empty:
+        return df
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    for c in ('game_id', 'market', 'side', 'odds', 'book'):
+        if c not in df.columns:
+            df[c] = '' if c in ('game_id', 'market', 'side', 'book') else np.nan
+    df['odds'] = pd.to_numeric(df['odds'], errors='coerce')
+    if 'sort_ts' not in df.columns:
+        df['sort_ts'] = pd.to_datetime(df.get('ts'), errors='coerce', utc=True)
+    return df
+
+def is_opposite(a: str, b: str, mode: str) -> bool:
+    if not a or not b:
+        return False
+    A, B = (a.strip().lower(), b.strip().lower())
+    if mode == 'Strict (OU/Home-Away)':
+        pairs = {('over', 'under'), ('home', 'away')}
+        return (A, B) in pairs or (B, A) in pairs
+    return A != B
+df = load_lines()
+top = st.columns([1, 1, 2, 1])
+with top[0]:
+    newest_first = st.toggle('Newest first', value=True)
+with top[1]:
+    mode = st.selectbox('Side match', ['Strict (OU/Home-Away)', 'Loose (any different)'], index=1)
+with top[2]:
+    odds_min, odds_max = st.slider('Odds window (American, abs)', 100, 300, (100, 200))
+with top[3]:
+    run = st.button('Find hedges', type='primary', width='stretch')
+if df.empty:
+    st.info('No lines found in Line Shop.')
+    st.stop()
+if 'sort_ts' in df.columns and df['sort_ts'].notna().any():
+    df = df.sort_values('sort_ts', ascending=not newest_first, na_position='last')
+games = df['game_id'].dropna().astype(str).unique().tolist()
+game = st.selectbox('Game', ['All'] + games)
+subset = df if game == 'All' else df[df['game_id'].astype(str) == game]
+subset = subset[subset['odds'].abs().between(odds_min, odds_max, inclusive='both')]
+if not run:
+    st.info('Adjust filters and click **Find hedges**.')
+    st.stop()
+rows = []
+for (gid, mkt), g in subset.groupby(['game_id', 'market'], dropna=False):
+    g = g.reset_index(drop=True)
+    for i, j in combinations(range(len(g)), 2):
+        a, b = (g.loc[i], g.loc[j])
+        if is_opposite(str(a.get('side', '')), str(b.get('side', '')), mode):
+            rows.append({'game_id': str(gid), 'market': str(mkt), 'a_side': str(a.get('side', '')), 'a_odds': a.get('odds'), 'a_book': str(a.get('book', '')), 'b_side': str(b.get('side', '')), 'b_odds': b.get('odds'), 'b_book': str(b.get('book', ''))})
+if not rows:
+    st.info('No hedges found at current filters.')
+else:
+    out = pd.DataFrame(rows)
+    st.dataframe(out, width='stretch')
+    st.download_button('Download hedges.csv', data=out.to_csv(index=False).encode('utf-8'), file_name='hedges.csv', mime='text/csv')
+
+
+
+
+
+

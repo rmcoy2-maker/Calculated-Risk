@@ -1,0 +1,111 @@
+import streamlit as st
+
+import streamlit as st
+try:
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+st.markdown("""
+<style>
+  .block-container {max-width: 1600px; padding-top: 0.5rem; padding-left: 1.0rem; padding-right: 1.0rem;}
+</style>
+""", unsafe_allow_html=True)
+# -*- coding: utf-8 -*-
+# Hedge Finder (safe) — shows simple opposite-side pairs within a game/market
+
+from itertools import combinations
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+EDGES_CSV = Path("exports/edges.csv")
+
+def read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        if path.stat().st_size == 0:
+            return pd.DataFrame()
+    except Exception:
+        pass
+    for kw in ({"encoding":"utf-8-sig"}, {}, {"engine":"python"}):
+        try:
+            return pd.read_csv(path, **kw)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+def load_edges() -> pd.DataFrame:
+    df = read_csv_safe(EDGES_CSV)
+    if df.empty: return df
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    df["sort_ts"] = pd.to_datetime(df.get("ts"), errors="coerce")
+    for c in ("game_id","market","side","odds","edge"):
+        if c not in df.columns: df[c] = ""
+    return df
+
+def is_opposite(a: str, b: str) -> bool:
+    if not a or not b: return False
+    A, B = a.strip().lower(), b.strip().lower()
+    pairs = {("over","under"), ("home","away")}
+    return (A,B) in pairs or (B,A) in pairs or (A != B and len(A) > 0 and len(B) > 0)
+
+st.subheader("Hedge Finder (safe)")
+
+df = load_edges()
+newest_first = st.toggle("Newest first", value=True)
+if "sort_ts" in df.columns:
+    df = df.sort_values("sort_ts", ascending=not newest_first, na_position="last").reset_index(drop=True)
+
+if df.empty:
+    st.info("No edges found.")
+    st.stop()
+
+# pick a game or show all
+games = df["game_id"].dropna().astype(str).unique().tolist()
+game = st.selectbox("Choose game", ["All"] + games)
+
+subset = df if game == "All" else df[df["game_id"].astype(str) == game]
+if subset.empty:
+    st.info("No rows for selection.")
+    st.stop()
+
+# group by (game, market) and list opposite-side pairs
+rows = []
+for (gid, mkt), g in subset.groupby(["game_id","market"], dropna=False):
+    g = g.reset_index(drop=True)
+    for i, j in combinations(range(len(g)), 2):
+        a = g.loc[i]; b = g.loc[j]
+        if is_opposite(str(a.get("side","")), str(b.get("side",""))):
+            rows.append({
+                "game_id": gid,
+                "market": mkt,
+                "A_ref": a.get("ref",""),
+                "A_side": a.get("side",""),
+                "A_odds": a.get("odds",""),
+                "B_ref": b.get("ref",""),
+                "B_side": b.get("side",""),
+                "B_odds": b.get("odds",""),
+                "A_edge": a.get("edge",""),
+                "B_edge": b.get("edge",""),
+                "A_ts": a.get("sort_ts"),
+                "B_ts": b.get("sort_ts"),
+            })
+
+out = pd.DataFrame(rows)
+if out.empty:
+    st.info("No opposite-side pairs found for current selection.")
+else:
+    st.dataframe(out, use_container_width=True, hide_index=True)
+
+
+
+
+
+

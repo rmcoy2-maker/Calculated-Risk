@@ -1,0 +1,366 @@
+import streamlit as st
+try:
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+# -*- coding: utf-8 -*-
+# app/pages/03_Backtest.py — robust backtest page (safe concat + smart season/week fallback)
+
+from __future__ import annotations
+import datetime as dt
+from pathlib import Path
+from typing import Dict, List, Tuple
+# --- auto-added: newest-first patch ---
+try:
+    import streamlit as st  # ensure alias available
+except Exception:
+    import streamlit as st
+from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+__nfp_apply(st)
+# --- end auto-added ---
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ---------------- Paths ----------------
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+EXPORTS = _REPO_ROOT / "exports"
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+# ---------------- Helpers ----------------
+def _read_csv_safe(path: Path) -> pd.DataFrame:
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return pd.DataFrame()
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+def american_to_decimal(odds: float) -> float:
+    odds = float(odds)
+    return 1 + (odds/100.0 if odds > 0 else 100.0/abs(odds))
+
+def implied_prob_from_american(am: float) -> float:
+    am = float(am)
+    return 100.0 / (am + 100.0) if am >= 0 else abs(am) / (abs(am) + 100.0)
+
+def kelly_fraction(p: float, american_odds: float, fraction: float = 0.5) -> float:
+    try:
+        p = float(p)
+        b = american_to_decimal(float(american_odds)) - 1.0
+        q = 1.0 - p
+        if b <= 0 or not (0.0 < p < 1.0):
+            return 0.0
+        f = (b * p - q) / b
+        return max(0.0, min(1.0, f * float(fraction)))
+    except Exception:
+        return 0.0
+
+def settle_row(row: pd.Series):
+    try:
+        stake = float(row.get("stake", 0) or 0)
+        odds  = float(row.get("odds", 0) or 0)
+        res   = str(row.get("result", "") or "").lower()
+        dec   = american_to_decimal(odds)
+        if res in ("win","won","w"):   return stake * (dec - 1.0), True
+        if res in ("lose","lost","l"): return -stake, True
+        if res in ("push","void","cancel","canceled","cancelled"): return 0.0, True
+        return 0.0, False
+    except Exception:
+        return 0.0, False
+
+def normalize_bets(df: pd.DataFrame, source_tag: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    keep = ["ts","sport","league","game_id","season","week","market","ref","side","line","odds","p_win","ev","result","stake","placed_at"]
+    for c in keep:
+        if c not in df.columns:
+            df[c] = None
+    ts = pd.to_datetime(df["placed_at"], errors="coerce") if df["placed_at"].notna().any() else pd.to_datetime(df["ts"], errors="coerce")
+    df["placed_at"] = ts
+    df["odds"]  = pd.to_numeric(df["odds"], errors="coerce")
+    df["stake"] = pd.to_numeric(df["stake"], errors="coerce").fillna(0.0)
+    df["p_win"] = pd.to_numeric(df["p_win"], errors="coerce")
+    df["src"]   = source_tag
+    return df
+
+_MARKET_GROUPS = {
+    "Moneyline":   ["ml","moneyline","money line","money-line"],
+    "Spread":      ["spread","ats","handicap","point spread"],
+    "Total (O/U)": ["total","totals","o/u","over/under","ou"],
+    "Props":       ["prop","props","player","passing","rushing","receiving","td","interception","tackles","sacks"],
+    "Parlay":      ["parlay"],
+}
+def classify_market(val: str) -> str:
+    t = str(val or "").lower()
+    for group, kws in _MARKET_GROUPS.items():
+        if any(kw in t for kw in kws):
+            return group
+    if t == "total":
+        return "Total (O/U)"
+    return "Other"
+
+def bankroll_curve(df: pd.DataFrame, bankroll_start: float = 100.0) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["placed_at","bankroll","running_max","drawdown"])
+    x = df.sort_values("placed_at").copy()
+    x["pnl_realized"] = pd.to_numeric(x.get("pnl", 0), errors="coerce").fillna(0.0)
+    x["cum_pnl"] = x["pnl_realized"].cumsum()
+    x["bankroll"] = bankroll_start + x["cum_pnl"]
+    x["running_max"] = x["bankroll"].cummax()
+    x["drawdown"] = x["bankroll"] - x["running_max"]
+    return x[["placed_at","bankroll","running_max","drawdown"]]
+
+def summarize(df: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFrame:
+    total_staked = float(pd.to_numeric(df.get("stake", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    realized_mask = df.get("result", pd.Series(dtype=str)).astype(str).str.lower().isin(
+        ["win","won","w","lose","lost","l","push","void","cancel","canceled","cancelled"]
+    )
+    realized = df[realized_mask].copy()
+    wins   = realized["result"].astype(str).str.lower().isin(["win","won","w"]).sum()
+    losses = realized["result"].astype(str).str.lower().isin(["lose","lost","l"]).sum()
+    pushes = realized["result"].astype(str).str.lower().isin(["push","void","cancel","canceled","cancelled"]).sum()
+    settled = len(realized)
+    realized_pnl = float(pd.to_numeric(realized.get("pnl", 0), errors="coerce").fillna(0).sum())
+    if realized_pnl == 0 and settled:
+        # compute if not present
+        total = 0.0
+        for _, r in realized.iterrows():
+            pnl, _ = settle_row(r if r.get("stake") not in (None, 0) else {"stake": r.get("stake_sim", 0.0), "odds": r.get("odds"), "result": r.get("result")})
+            total += pnl
+        realized_pnl = total
+    roi      = (realized_pnl / total_staked) if total_staked else np.nan
+    avg_odds = pd.to_numeric(realized.get("odds", pd.Series(dtype=float)), errors="coerce").mean()
+    max_dd   = float(curve["drawdown"].min()) if not curve.empty else 0.0
+    return pd.DataFrame([{
+        "bets": len(df), "settled": int(settled), "wins": int(wins), "losses": int(losses), "pushes": int(pushes),
+        "staked_units": round(total_staked, 2), "realized_pnl": round(realized_pnl, 2),
+        "roi": round(roi, 4) if pd.notna(roi) else np.nan,
+        "avg_odds": round(float(avg_odds), 2) if pd.notna(avg_odds) else np.nan,
+        "max_drawdown": round(max_dd, 2),
+    }])
+
+def _infer_season_week(x: pd.DataFrame) -> pd.DataFrame:
+    if x is None or x.empty:
+        return pd.DataFrame()
+    have_season = ("season" in x.columns) and (x["season"].astype(str).str.len() >= 4).any()
+    if not have_season and "game_id" in x.columns:
+        x = x.copy()
+        x["season"] = x["game_id"].astype(str).str.extract(r"(?i)\b(19\d{2}|20\d{2})\b", expand=False)
+    elif "season" not in x.columns:
+        x["season"] = None
+    have_week = ("week" in x.columns) and (x["week"].notna().any())
+    if not have_week and "game_id" in x.columns:
+        gid = x["game_id"].astype(str)
+        w1 = gid.str.extract(r"(?i)-W?(\d{1,2})\b", expand=False)
+        w2 = gid.str.extract(r"(?i)\bW(\d{1,2})\b", expand=False)
+        w3 = gid.str.extract(r"(?i)\bweek[_\-\s]?(\d{1,2})\b", expand=False)
+        w4 = gid.str.extract(r"(?i)[_\-](\d{1,2})[_\-]", expand=False)
+        w5 = gid.str.extract(r"(?i)REG(\d{1,2})\b", expand=False)
+        x["week"] = w1.fillna(w2).fillna(w3).fillna(w4).fillna(w5)
+    if "week" in x.columns:
+        x["week"] = pd.to_numeric(x["week"], errors="coerce").astype("Int64")
+    if "season" in x.columns:
+        x["season"] = x["season"].astype(str).where(x["season"].notna(), None)
+    return x
+
+def _preview_seasons_weeks() -> Tuple[List[str], Dict[str, List[int]]]:
+    bl = normalize_bets(_read_csv_safe(EXPORTS / "bets_log.csv"), "bets_log")
+    pl = normalize_bets(_read_csv_safe(EXPORTS / "parlays.csv"), "parlays")
+    eg = _read_csv_safe(EXPORTS / "edges.csv")
+    if not eg.empty:
+        eg = eg.copy()
+        eg.rename(columns={c: c.lower() for c in eg.columns}, inplace=True)
+        for c in ["ts","sport","league","game_id","season","week","market","ref","side","line","odds","p_win"]:
+            if c not in eg.columns: eg[c] = None
+        eg["stake"] = 0.0
+        eg["placed_at"] = pd.to_datetime(eg["ts"], errors="coerce")
+        eg["src"] = "edges"
+    eg = normalize_bets(eg, "edges")
+    parts = [d for d in [bl, pl, eg] if d is not None and not d.empty]
+    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    df = _infer_season_week(df)
+    seasons = sorted(set(df["season"].dropna().astype(str))) if not df.empty and "season" in df.columns else []
+    weeks_by_season: Dict[str, List[int]] = {}
+    if not df.empty and "season" in df.columns and "week" in df.columns:
+        tmp = df.dropna(subset=["season"])
+        for s, grp in tmp.groupby(tmp["season"].astype(str)):
+            ws = sorted(set(pd.to_numeric(grp["week"], errors="coerce").dropna().astype(int).tolist()))
+            weeks_by_season[str(s)] = ws
+    if not seasons or len(seasons) < 5:
+        current_season = max([int(x) for x in seasons], default=dt.datetime.utcnow().year)
+        seasons = [str(y) for y in range(1966, max(current_season, dt.datetime.utcnow().year) + 1)]
+        weeks_by_season = {s: list(range(1, 23)) for s in seasons}
+    return seasons, weeks_by_season
+
+def apply_policy(df: pd.DataFrame, policy: str, bankroll_start: float, unit_size: float, kelly_frac: float) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["placed_at","odds","stake","stake_sim","p_win","policy","pnl"])
+    df = df.copy()
+    df["policy"] = policy
+    df["stake_sim"] = 0.0
+    rows = []
+    for _, r in df.sort_values("placed_at").iterrows():
+        p_win = r.get("p_win")
+        odds  = r.get("odds")
+        if pd.isna(p_win) and pd.notna(odds): p_win = implied_prob_from_american(float(odds))
+        elif pd.isna(p_win): p_win = 0.5
+        if policy == "flat_units":
+            stake = float(unit_size)
+        elif policy == "percent_bankroll":
+            # unit_size is the fraction (e.g., 0.01 = 1%)
+            stake = float(bankroll_start) * float(unit_size)
+        else:
+            stake = float(bankroll_start) * float(kelly_fraction(float(p_win), float(odds), fraction=kelly_frac))
+        rows.append({**r.to_dict(), "p_win": p_win, "stake_sim": stake})
+    out = pd.DataFrame(rows)
+    def _pnl(row):
+        base = row if not pd.isna(row.get("stake")) and row.get("stake") not in (None, 0) else {"stake": row.get("stake_sim", 0.0), "odds": row.get("odds"), "result": row.get("result")}
+        pnl, _ = settle_row(base)
+        return pnl
+    out["pnl"] = out.apply(_pnl, axis=1)
+    return out
+
+# ---------------- UI ----------------
+st.header("Backtest")
+
+with st.form("backtest_form"):
+    c1, c2, c3 = st.columns([1,1,2])
+    sport = c1.text_input("Sport (default NFL)", value="NFL")
+    seasons, weeks_by_season = _preview_seasons_weeks()
+    season_choice = c2.selectbox("Season", options=["All"] + seasons, index=0)
+
+    c4, c5 = st.columns([1,3])
+    market_sel = c4.multiselect(
+        "Markets (choose one or more)",
+        options=list(_MARKET_GROUPS.keys()),
+        default=["Moneyline","Spread","Total (O/U)","Props","Parlay"],
+    )
+
+    if season_choice != "All":
+        week_opts = weeks_by_season.get(season_choice) or list(range(1, 23)) or list(range(1, 23))
+        week_choice = c5.multiselect(
+            "Weeks (if season selected)",
+            options=week_opts,
+            default=week_opts,
+            key=f"weeks_{season_choice}"
+        )
+    else:
+        week_choice = c5.multiselect("Weeks (if season selected)", options=[], default=[], key="weeks_all")
+
+    c6, c7 = st.columns([1,1])
+    min_edge = c6.number_input("Min edge (%)", min_value=0.0, value=0.0, step=0.25)
+    use_logs = c7.checkbox("Use bets_log.csv + parlays.csv", value=True)
+
+    c8, c9, c10 = st.columns(3)
+    policy   = c8.selectbox("Staking policy", ["flat_units","percent_bankroll","kelly_frac"], index=0)
+    bankroll = c9.number_input("Starting bankroll (units)", min_value=1.0, value=100.0, step=1.0)
+    if policy == "flat_units":
+        unit_size = c10.number_input("Flat unit size", min_value=0.01, value=1.0, step=0.25)
+        k_frac = 0.5
+    elif policy == "percent_bankroll":
+        unit_size = c10.number_input("Percent of bankroll (e.g., 0.01 = 1%)", min_value=0.0001, max_value=1.0, value=0.01, step=0.005, format="%.4f")
+        k_frac = 0.5
+    else:
+        unit_size = 1.0
+        k_frac = c10.number_input("Kelly fraction", min_value=0.01, max_value=1.0, value=0.5, step=0.05)
+
+    # Row-count caption + auto-fallback
+    bl_test = _read_csv_safe(EXPORTS / "bets_log.csv")
+    pl_test = _read_csv_safe(EXPORTS / "parlays.csv")
+    eg_test = _read_csv_safe(EXPORTS / "edges.csv")
+    rows_bl = 0 if bl_test is None or bl_test.empty else len(bl_test)
+    rows_pl = 0 if pl_test is None or pl_test.empty else len(pl_test)
+    rows_eg = 0 if eg_test is None or eg_test.empty else len(eg_test)
+    st.caption(f"Data check → bets_log.csv: {rows_bl} | parlays.csv: {rows_pl} | edges.csv: {rows_eg} | exports: {EXPORTS}")
+    if rows_bl + rows_pl == 0 and rows_eg > 0 and use_logs:
+        use_logs = False
+        st.info("Logs are empty; using edges.csv instead.")
+
+    submitted = st.form_submit_button("Run Backtest")
+
+if submitted:
+    try:
+        df_list: List[pd.DataFrame] = []
+        if use_logs:
+            bl = normalize_bets(_read_csv_safe(EXPORTS / "bets_log.csv"), "bets_log")
+            pl = normalize_bets(_read_csv_safe(EXPORTS / "parlays.csv"), "parlays")
+            df_list += [bl, pl]
+        else:
+            eg = _read_csv_safe(EXPORTS / "edges.csv")
+            if not eg.empty:
+                eg = eg.copy()
+                eg.rename(columns={c: c.lower() for c in eg.columns}, inplace=True)
+                keep = ["ts","sport","league","game_id","market","ref","side","line","odds","p_win"]
+                for c in keep:
+                    if c not in eg.columns: eg[c] = None
+                eg["placed_at"] = pd.to_datetime(eg["ts"], errors="coerce")
+                eg["stake"] = 0.0
+                df_list.append(eg[keep + ["placed_at","stake"]])
+
+        parts = [d for d in df_list if d is not None and not d.empty]
+        base = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+        if base.empty:
+            st.warning(
+                "No data found after loading.\n\n"
+                f"Checked fnewer: {EXPORTS}\n"
+                f"- bets_log.csv rows: {rows_bl}\n"
+                f"- parlays.csv rows: {rows_pl}\n"
+                f"- edges.csv rows: {rows_eg}\n\n"
+                "Tips:\n"
+                "• If using logs, bets_log.csv/parlays.csv need at least: ts,odds,result,stake\n"
+                "• If using edges, edges.csv needs at least: ts,sport,league,game_id,market,ref,side,line,odds,p_win\n"
+                "• You can also uncheck the logs box to use edges only."
+            )
+        else:
+            base["market_group"] = base.get("market","").map(classify_market)
+            if str(sport).strip() and "sport" in base.columns:
+                base = base[base["sport"].astype(str).str.contains(str(sport), case=False, na=False)]
+            else:
+                if "sport" not in base.columns: base["sport"] = "NFL"
+            base = _infer_season_week(base)
+            if season_choice != "All" and "season" in base.columns:
+                base = base[base["season"].astype(str) == str(season_choice)]
+            if "week" in base.columns and week_choice:
+                base = base[base["week"].astype(float).isin([float(w) for w in week_choice])]
+            if market_sel:
+                base = base[base["market_group"].isin(market_sel)]
+            if "ev" in base.columns:
+                base = base[(pd.to_numeric(base["ev"], errors="coerce").fillna(-999) * 100.0) >= float(min_edge)]
+            pol_df = apply_policy(base, policy=policy, bankroll_start=bankroll, unit_size=unit_size, kelly_frac=k_frac)
+            curve  = bankroll_curve(pol_df, bankroll_start=bankroll)
+            summary = summarize(pol_df, curve)
+
+            st.subheader("Summary")
+            st.dataframe(summary, use_container_width=True)
+
+            st.subheader("Bankroll curve (realized only)")
+            if not curve.empty:
+                st.line_chart(curve.set_index("placed_at")["bankroll"], use_container_width=True)
+            else:
+                st.caption("No settled bets to plot.")
+
+            st.subheader("Bets (filtered)")
+            show_cols = [c for c in [
+                "placed_at","sport","league","game_id","season","week","market","market_group",
+                "ref","side","line","odds","p_win","ev","stake","stake_sim","result","pnl","policy","tag","src"
+            ] if c in pol_df.columns]
+            st.dataframe(pol_df[show_cols] if show_cols else pol_df, use_container_width=True)
+    except Exception as e:
+        st.error(f"Backtest page error: {e}")
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,9 @@
+﻿import streamlit as st
+try:
+    from serving_ui.app._layout import header
+except Exception:
+    from _layout import header
+
+header()
+st.write("Use the Pages menu on the left for **Edge Scanner**, **Bet History**, **Run Backtest**.")
+

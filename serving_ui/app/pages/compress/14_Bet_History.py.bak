@@ -1,0 +1,76 @@
+from __future__ import annotations
+import streamlit as st
+try:
+    pass
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+# --- auto-added: newest-first patch ---
+
+try:
+    # Preferred absolute import (when 'app' is a proper package)
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        # Fallback if pages are executed such that relative path works
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+        # Final no-op guard
+        def __nfp_apply(_): 
+            return
+import streamlit as st  # ensure alias available
+__nfp_apply(st)
+# --- end auto-added ---
+# --- path bootstrap (make top-level 'app' importable) ---
+import sys
+from pathlib import Path
+PROJ_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJ_ROOT))
+# ---------------------------------------
+# --- path bootstrap so "import app.*" works ---
+from app.bootstrap import bootstrap_paths; bootstrap_paths()
+
+from pathlib import Path
+import sys
+import pandas as pd
+import streamlit as st
+
+# Resolve repo root (...\edge-finder)
+HERE  = Path(__file__).resolve()
+REPO  = HERE.parents[3]  # pages -> app -> serving_ui -> edge-finder
+BETLOG = REPO / "exports" / "bets_log.csv"
+st.title("📜 Bet History")
+st.caption(f"🔎 Using log: {BETLOG}")
+
+try:
+    if BETLOG.exists():
+        df = pd.read_csv(BETLOG, encoding="utf-8-sig")
+        st.caption(f"Rows: {len(df)}")
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No bet log found yet.")
+        with st.expander("⚙️ Diagnostics", expanded=False):
+            st.write("Expected path:", str(BETLOG))
+            st.write("Exists?", BETLOG.exists())
+except Exception as e:
+    st.error(f"Page error: {e}")
+    with st.expander("Traceback"):
+        import traceback
+        st.code(traceback.format_exc())
+
+
+
+
+
+
+
+
+
+
+

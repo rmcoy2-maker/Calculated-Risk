@@ -1,0 +1,73 @@
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+import re
+
+def american_to_prob(odds):
+    try: o = int(odds)
+    except: return None
+    if o > 0:
+        return 100 / (o + 100)
+    else:
+        return abs(o) / (abs(o) + 100)
+
+def scrape_season(season):
+    url = f"https://www.sportsoddshistory.com/nfl-game-odds/?y={season}"
+    print(f"Fetching {url}")
+    r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"})
+    soup = BeautifulSoup(r.text, "html.parser")
+    tables = soup.find_all("table")
+    if not tables:
+        return pd.DataFrame()
+    df = pd.read_html(str(tables[0]))[0]
+
+    # clean columns — SOH headers vary a bit by year
+    df.columns = [c.lower().strip() for c in df.columns]
+
+    # assume columns like: date, visitor, vis_ml, home, home_ml, spread
+    out_rows = []
+    for _, row in df.iterrows():
+        try:
+            week = row.get("week") or row.get("wk")
+            away = row.get("visitor") or row.get("team")
+            home = row.get("home")
+            ml_away = row.get("ml") or row.get("vis ml") or row.get("visitor ml")
+            ml_home = row.get("home ml")
+            spread = row.get("spread")
+
+            # make two rows per game (moneyline)
+            for team, opp, ml in [(home, away, ml_home), (away, home, ml_away)]:
+                if ml is None or (isinstance(ml,float) and pd.isna(ml)): 
+                    continue
+                try:
+                    ml = int(ml)
+                except:
+                    continue
+                p_win = american_to_prob(ml)
+                out_rows.append({
+                    "season": season,
+                    "week": week,
+                    "market": "moneyline",
+                    "odds": ml,
+                    "p_win": p_win,
+                    "team": team,
+                    "opponent": opp,
+                    "ref": f"{season}-{team}-{opp}-W{week}"
+                })
+        except Exception as e:
+            continue
+    return pd.DataFrame(out_rows)
+
+def main():
+    seasons = range(1999, 2017)  # expand as needed
+    all_rows = []
+    for yr in seasons:
+        df = scrape_season(yr)
+        if not df.empty:
+            all_rows.append(df)
+    big = pd.concat(all_rows, ignore_index=True)
+    big.to_csv("exports/soh_edges_1999_2016.csv", index=False)
+    print(f"Wrote exports/soh_edges_1999_2016.csv with {len(big)} rows")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,870 @@
+﻿# ---- PATH SHIM (auto-added) ----
+import sys, pathlib
+_APP_DIR = pathlib.Path(__file__).resolve().parents[1]  # ...\serving_ui\app
+_PARENT  = _APP_DIR.parent                              # ...\serving_ui
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
+# ---- END PATH SHIM ----
+# --- path bootstrap (make top-level 'app' importable) ---
+import sys
+from pathlib import Path
+PROJ_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJ_ROOT))
+# ---------------------------------------
+try:
+    from app.lib.metrics import weekly_roi_closed, weekly_roi_by_origin
+except ModuleNotFoundError:
+    from lib.metrics import weekly_roi_closed, weekly_roi_by_origin
+# 06_Bet_Log.py
+# Streamlit page: Bet Log
+# Includes: parlay settlement, fuzzy results matching, diagnostics,
+# paste-scores, skeleton writer, and **Fetch NFL Results (nflverse)** button.
+# --------------------------------------------------------------------------------------------------------------
+
+from pathlib import Path
+from datetime import datetime, timedelta, date
+from typing import Iterable, Optional, Dict, Any, List, Tuple
+import ast
+import json
+import re
+import io
+import os
+
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+# Extra deps for fetcher
+try:
+    import requests  # streamlit environment usually has it; used for nflverse fetch
+except Exception:
+    requests = None
+
+# --------------------------------------------------------------------------------------------------------------
+# Optional bootstrap (won't crash if not present)
+# --------------------------------------------------------------------------------------------------------------
+try:
+    try:
+    from app.bootstrap import bootstrap_paths
+except ModuleNotFoundError:
+    try:
+        from bootstrap import bootstrap_paths
+    except Exception:
+        def bootstrap_paths():  # no-op fallback
+            return None  # type: ignore
+    bootstrap_paths()
+except Exception:
+    pass
+
+# --------------------------------------------------------------------------------------------------------------
+# Page config
+# --------------------------------------------------------------------------------------------------------------
+st.set_page_config(page_title="Bet Log", page_icon="📒", layout="wide")
+st.title("📒 Bet Log")
+st.caption("Robust loader, filters, parlay settlement from legs, diagnostics, fuzzy matching, and summaries.")
+
+# --------------------------------------------------------------------------------------------------------------
+# Paths / Discovery
+# --------------------------------------------------------------------------------------------------------------
+def _discover_exports() -> Path:
+    here = Path(__file__).resolve()
+    candidates: Iterable[Path] = [
+        here.parents[3] / "exports",
+        here.parents[2] / "exports",
+        here.parents[1] / "exports",
+        here.parent / "exports",
+    ]
+    for p in candidates:
+        try:
+            if p.exists() and p.is_dir():
+                return p
+        except Exception:
+            continue
+    fallback = here.parent / "exports"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+EXPORTS: Path = _discover_exports()
+PARLAYS: Path = EXPORTS / "parlays.csv"
+BETS_LOG: Path = EXPORTS / "bets_log.csv"
+RESULTS: Path = EXPORTS / "results.csv"  # auto-created/updated
+
+st.sidebar.subheader("📁 Data locations")
+st.sidebar.code(str(EXPORTS))
+
+# --------------------------------------------------------------------------------------------------------------
+# Columns / Schemas
+# --------------------------------------------------------------------------------------------------------------
+PARLAY_COLS = [
+    "ts","sport","league","game_id","market","ref","side","line","odds",
+    "stake","p_win","ev","parlay_id","leg_index","payout","result","notes","placed_at"
+]
+BETLOG_COLS = [
+    "ts","game_id","market","ref","side","line","odds","p_win","ev",
+    "stake","placed_at","result","payout","notes"
+]
+
+# --------------------------------------------------------------------------------------------------------------
+# IO helpers (defensive)
+# --------------------------------------------------------------------------------------------------------------
+def coalesce_datetime(df, cols):
+    """Return a single datetime Series by coalescing the first existing, non-null values across cols."""
+    s = pd.Series(pd.NaT, index=df.index)
+    for c in cols:
+        if c in df.columns:
+            s = s.fillna(pd.to_datetime(df[c], errors="coerce"))
+    return s
+
+# use it here
+out["ts"] = coalesce_datetime(out, ["sort_ts", "ts"])
+
+def _ensure_headers(path: Path, header_line: str) -> None:
+    try:
+        if (not path.exists()) or path.stat().st_size == 0:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(header_line + "\n", encoding="utf-8")
+    except Exception as e:
+        st.warning(f"Could not ensure headers for {path.name}: {e}")
+
+def _normalize_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    for c in cols:
+        if c not in df.columns:
+            df[c] = pd.NA
+    return df[cols].copy()
+
+def _coerce_datetime(df: pd.DataFrame, colnames: Iterable[str]) -> pd.DataFrame:
+    for c in colnames:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
+    return df
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _read_csv_safe(path: Path, cols: list[str]) -> pd.DataFrame:
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return pd.DataFrame(columns=cols)
+        try:
+            df = pd.read_csv(path, encoding="utf-8-sig")
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame(columns=cols)
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        df = _normalize_columns(df, cols)
+        return df
+    except Exception as e:
+        st.warning(f"Could not read {path.name}: {e}")
+        return pd.DataFrame(columns=cols)
+
+# --------------------------------------------------------------------------------------------------------------
+# Load data
+# --------------------------------------------------------------------------------------------------------------
+_ensure_headers(PARLAYS, ",".join(PARLAY_COLS))
+_ensure_headers(BETS_LOG, ",".join(BETLOG_COLS))
+_ensure_headers(RESULTS, "game_id,home_score,away_score,home,away,total_points")
+
+parlays_df = _read_csv_safe(PARLAYS, PARLAY_COLS)
+bets_df    = _read_csv_safe(BETS_LOG, BETLOG_COLS)
+
+parlays_df = _coerce_datetime(parlays_df, ["ts","placed_at"])
+bets_df    = _coerce_datetime(bets_df, ["ts","placed_at"])
+
+if not parlays_df.empty:
+    parlays_df = parlays_df.assign(origin="suggested")
+if not bets_df.empty:
+    bets_df = bets_df.assign(origin="placed")
+
+# --------------------------------------------------------------------------------------------------------------
+# Results loader (for settling legs) with fuzzy keys + mtime cache
+# --------------------------------------------------------------------------------------------------------------
+def _results_mtime() -> float:
+    try:
+        return RESULTS.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+def _norm_gid(gid: str) -> Tuple[str,str]:
+    gid = str(gid or "")
+    exact = gid.upper().strip()
+    m = re.search(r"([A-Z]{2,4}@[A-Z]{2,4})$", exact)
+    fuzzy = m.group(1) if m else exact
+    return exact, fuzzy
+
+@st.cache_data(ttl=0, show_spinner=False)
+def load_results_map(_mtime: float) -> Dict[str, Dict[str, Any]]:
+    try:
+        df = pd.read_csv(RESULTS, encoding="utf-8-sig")
+    except Exception:
+        return {}
+    cols = {c.lower(): c for c in df.columns}
+    gid = cols.get("game_id") or cols.get("gid") or cols.get("gameid")
+    hs  = cols.get("home_score") or cols.get("home_pts") or cols.get("home_points") or cols.get("score_home")
+    as_ = cols.get("away_score") or cols.get("away_pts") or cols.get("away_points") or cols.get("score_away")
+    home = cols.get("home") or cols.get("home_team") or cols.get("team_home") or cols.get("home_abbrev")
+    away = cols.get("away") or cols.get("away_team") or cols.get("team_away") or cols.get("away_abbrev")
+    total = cols.get("total_points")
+    if not gid or not hs or not as_:
+        return {}
+    keep = [gid, hs, as_] + [c for c in [home, away, total] if c]
+    df = df[keep].copy()
+    df.rename(columns={gid:"game_id", hs:"home_score", as_:"away_score"}, inplace=True)
+    if home: df.rename(columns={home:"home"}, inplace=True)
+    if away: df.rename(columns={away:"away"}, inplace=True)
+    if total: df.rename(columns={total:"total_points"}, inplace=True)
+    if "total_points" not in df.columns:
+        df["total_points"] = pd.to_numeric(df["home_score"], errors="coerce") + pd.to_numeric(df["away_score"], errors="coerce")
+    out: Dict[str, Dict[str, Any]] = {}
+    for _, r in df.iterrows():
+        record = dict(r)
+        exact, fuzzy = _norm_gid(record.get("game_id",""))
+        out[exact] = record
+        out[fuzzy] = record
+        h = str(record.get("home","") or "").upper()
+        a = str(record.get("away","") or "").upper()
+        if h and a:
+            out[f"{a}@{h}"] = record  # away@home
+    return out
+
+RESULTS_MAP: Dict[str, Dict[str, Any]] = load_results_map(_results_mtime())
+
+# --------------------------------------------------------------------------------------------------------------
+# Team normalization
+# --------------------------------------------------------------------------------------------------------------
+TEAM_MAP = {
+    "NE":"NE","NEP":"NE","NWE":"NE",
+    "GB":"GB","GBP":"GB",
+    "KC":"KC","KAN":"KC",
+    "PHI":"PHI","PHL":"PHI",
+    "DAL":"DAL","CHI":"CHI","NYJ":"NYJ","BUF":"BUF",
+}
+def _norm_team(s: str) -> str:
+    s = (s or "").upper()
+    return TEAM_MAP.get(s, s)
+
+# --------------------------------------------------------------------------------------------------------------
+# Leg parsing & settlement
+# --------------------------------------------------------------------------------------------------------------
+def _safe_parse_legs(val: Any) -> List[Dict[str, Any]]:
+    if isinstance(val, list):
+        return val
+    if not isinstance(val, str) or val.strip() == "":
+        return []
+    s = val.strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    try:
+        obj = ast.literal_eval(s)
+        if isinstance(obj, list):
+            return obj
+    except Exception:
+        return []
+    return []
+
+def _lookup_result_for_gid(gid: str) -> Optional[Dict[str, Any]]:
+    exact, fuzzy = _norm_gid(gid)
+    return RESULTS_MAP.get(exact) or RESULTS_MAP.get(fuzzy)
+
+def _settle_leg(leg: Dict[str, Any], results: Dict[str, Dict[str, Any]]) -> str:
+    gid = str(leg.get("game_id") or leg.get("gid") or "")
+    r = _lookup_result_for_gid(gid) if gid else None
+    if r is None:
+        return "open"
+    market = str(leg.get("market","")).upper()
+    side = _norm_team(str(leg.get("side","")).upper())
+    try:
+        line = float(leg.get("line")) if leg.get("line") not in (None,"",pd.NA) else None
+    except Exception:
+        line = None
+    home = _norm_team(str(r.get("home","")).upper())
+    away = _norm_team(str(r.get("away","")).upper())
+    hs = float(r.get("home_score", float("nan")))
+    as_ = float(r.get("away_score", float("nan")))
+    total_pts = float(r.get("total_points", hs+as_))
+
+    if market in {"ML","MONEYLINE"}:
+        if side in {home, away}:
+            if hs > as_ and side == home: return "win"
+            if as_ > hs and side == away: return "win"
+            if hs == as_: return "push"
+            return "loss"
+        return "open"
+
+    if market in {"ATS","SPREAD","HANDICAP"} and line is not None and side:
+        margin = hs - as_ if side == home else as_ - hs if side == away else None
+        if margin is None: return "open"
+        adj_margin = margin + line
+        if adj_margin > 0: return "win"
+        if adj_margin == 0: return "push"
+        return "loss"
+
+    if market in {"TOTAL","OU","O/U","O-U"} and line is not None:
+        if side in {"OVER","O"}:
+            if total_pts > line: return "win"
+            if total_pts == line: return "push"
+            return "loss"
+        if side in {"UNDER","U"}:
+            if total_pts < line: return "win"
+            if total_pts == line: return "push"
+            return "loss"
+        return "open"
+
+    return "open"
+
+def _settle_parlay_from_legs(row: pd.Series, results: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    if str(row.get("market","")).upper() != "PARLAY":
+        return None
+    legs = _safe_parse_legs(row.get("side") or row.get("ref"))
+    if not legs: return None
+    statuses = [_settle_leg(leg, results) for leg in legs]
+    if any(s == "loss" for s in statuses): return "loss"
+    if all(s == "push" for s in statuses): return "push"
+    if all(s in {"win","push"} for s in statuses): return "win"
+    return "open"
+
+# --------------------------------------------------------------------------------------------------------------
+# Unify rows
+# --------------------------------------------------------------------------------------------------------------
+def _unify_rows(parlays: pd.DataFrame, bets: pd.DataFrame) -> pd.DataFrame:
+    def enrich(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        if "placed_at" not in out.columns: out["placed_at"] = pd.NaT
+        if "sport" not in out.columns:     out["sport"] = pd.NA
+        if "league" not in out.columns:    out["league"] = pd.NA
+
+        def american_to_decimal(o) -> float:
+            try:
+                o = float(o)
+                if o >= 100:  return 1 + (o / 100.0)
+                if o <= -100: return 1 + (100.0 / abs(o))
+                return 1.0
+            except Exception:
+                return 1.0
+
+        out["dec_odds"] = out.get("odds", pd.Series([], dtype="float64")).map(american_to_decimal)
+        out["imp_prob"] = out["dec_odds"].apply(lambda d: 1.0 / d if d and d > 0 else pd.NA)
+        return out
+
+    p = enrich(parlays) if not parlays.empty else pd.DataFrame(columns=PARLAY_COLS + ["origin", "dec_odds", "imp_prob"])
+    b = enrich(bets)    if not bets.empty    else pd.DataFrame(columns=BETLOG_COLS + ["origin", "dec_odds", "imp_prob"])
+
+    display_cols = [
+        "origin","ts","placed_at","sport","league","game_id","market","ref","side","line",
+        "odds","dec_odds","imp_prob","p_win","ev","stake","result","payout","notes","parlay_id","leg_index"
+    ]
+    for c in display_cols:
+        if c not in p.columns: p[c] = pd.NA
+        if c not in b.columns: b[c] = pd.NA
+
+    base = pd.concat([p[display_cols], b[display_cols]], ignore_index=True)
+    base["sort_ts"] = base["placed_at"].fillna(base["ts"])
+    base = base.sort_values("sort_ts", ascending=False, na_position="last").reset_index(drop=True)
+    return base
+
+base = _unify_rows(parlays_df, bets_df)
+
+# --------------------------------------------------------------------------------------------------------------
+# Outcome + PnL helpers
+# --------------------------------------------------------------------------------------------------------------
+def _label_outcome(row: pd.Series) -> str:
+    r = str(row.get("result", "")).strip().lower()
+    if r in {"win", "won"}: return "win"
+    if r in {"loss", "lose", "lost"}: return "loss"
+    if r in {"push", "void", "refund"}: return "push"
+
+    settled = _settle_parlay_from_legs(row, RESULTS_MAP)
+    if settled is not None and settled != "open": return settled
+
+    stake = pd.to_numeric(row.get("stake", pd.NA), errors="coerce")
+    payout = pd.to_numeric(row.get("payout", pd.NA), errors="coerce")
+    if pd.notna(stake) and pd.notna(payout):
+        if payout > stake:  return "win"
+        if payout == stake: return "push"
+        if payout == 0 and stake > 0: return "loss"
+
+    return "open"
+
+def _pnl_from_outcome(stake: float, dec_odds: float, outcome: str) -> float:
+    if outcome == "win":  return stake * (dec_odds - 1.0)
+    if outcome == "loss": return -stake
+    if outcome == "push": return 0.0
+    return float("nan")
+
+def _attach_outcomes_and_pnl(df: pd.DataFrame, pretend_one_dollar: bool) -> pd.DataFrame:
+    out = df.copy()
+    # Default stake logic: blanks/zeros -> 1.0 unit (unless pretend toggle is on)
+    out["stake_used"] = 1.0 if pretend_one_dollar else pd.to_numeric(
+        out.get("stake", 1.0), errors="coerce"
+    ).fillna(1.0).replace(0, 1.0)
+
+    out["dec_odds"] = pd.to_numeric(out.get("dec_odds", 1.0), errors="coerce").fillna(1.0)
+    out["outcome"]  = out.apply(_label_outcome, axis=1)
+
+    out["pnl_realized"] = out.apply(
+        lambda r: _pnl_from_outcome(float(r["stake_used"]), float(r["dec_odds"]), r["outcome"]),
+        axis=1
+    )
+
+    pwin = pd.to_numeric(out.get("p_win", pd.NA), errors="coerce")
+    out["pnl_expected"] = (pwin * (out["dec_odds"] - 1.0) - (1 - pwin)) * out["stake_used"]
+    out.loc[pwin.isna(), "pnl_expected"] = pd.NA
+    return out
+
+# --------------------------------------------------------------------------------------------------------------
+# Sidebar filters
+# --------------------------------------------------------------------------------------------------------------
+with st.sidebar:
+    st.subheader("🔎 Filters")
+    if RESULTS_MAP:
+        st.success("Using exports/results.csv (fuzzy matching enabled).")
+    else:
+        st.info("Created an empty exports/results.csv for you. Use 'Paste scores' or 'Fetch NFL Results'.")
+
+    pretend_toggle = st.checkbox(
+        "Pretend $1 stake per row", value=False,
+        help="Ignores the CSV stake column and uses $1 for performance math."
+    )
+
+    if not base.empty and base["sort_ts"].notna().any():
+        max_dt = pd.to_datetime(base["sort_ts"]).max().to_pydatetime()
+        min_dt = (max_dt - timedelta(days=14)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_dt, end_dt = st.date_input(
+            "Date range (by placed_at/ts)",
+            value=(min_dt.date(), max_dt.date()),
+            help="Filters by placed_at (or ts if placed_at is NA).",
+        )
+    else:
+        st.date_input("Date range (by placed_at/ts)", disabled=True)
+        start_dt, end_dt = None, None
+
+    distinct_markets = sorted([m for m in base["market"].dropna().unique().tolist()]) if not base.empty else []
+    market = st.selectbox("Market", options=["(all)"] + distinct_markets, index=0)
+
+    origins = ["(all)"]
+    if not parlays_df.empty: origins.append("suggested")
+    if not bets_df.empty: origins.append("placed")
+    origin_pick = st.selectbox("Origin", options=origins, index=0)
+
+    leagues = sorted([m for m in base["league"].dropna().unique().tolist()]) if not base.empty else []
+    league_pick = st.selectbox("League", options=["(all)"] + leagues, index=0)
+
+def _apply_filters(df: pd.DataFrame,
+                   start_dt: Optional[datetime.date],
+                   end_dt: Optional[datetime.date],
+                   market: str,
+                   origin: str,
+                   league: str) -> pd.DataFrame:
+    out = df.copy()
+    if start_dt and end_dt and out.shape[0] > 0:
+        start_ts = pd.Timestamp(start_dt).tz_localize("UTC")
+        end_ts = pd.Timestamp(end_dt + timedelta(days=1)).tz_localize("UTC")
+        out = out[(out["sort_ts"].notna()) & (out["sort_ts"] >= start_ts) & (out["sort_ts"] < end_ts)]
+    if market and market != "(all)":
+        out = out[out["market"] == market]
+    if origin and origin != "(all)":
+        out = out[out["origin"] == origin]
+    if league and league != "(all)":
+        out = out[out["league"] == league]
+    return out
+
+filtered = _apply_filters(base, start_dt, end_dt, market, origin_pick, league_pick)
+scored = _attach_outcomes_and_pnl(filtered, pretend_toggle)
+
+# --------------------------------------------------------------------------------------------------------------
+# Summary metrics
+# --------------------------------------------------------------------------------------------------------------
+col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+total_rows = int(scored.shape[0])
+with col1: st.metric("Rows", f"{total_rows}")
+
+with col2:
+    st.metric("Total Stake Used", f"${scored['stake_used'].sum():,.2f}")
+
+realized = scored.loc[scored["outcome"].isin(["win","loss","push"]), "pnl_realized"].fillna(0).sum()
+with col3: st.metric("Realized PnL", f"${realized:,.2f}")
+
+exp_pnl = pd.to_numeric(scored["pnl_expected"], errors="coerce").dropna().sum()
+with col4: st.metric("Expected PnL (EV)", f"${exp_pnl:,.2f}")
+
+placed_ct = int((scored["origin"] == "placed").sum())
+sugg_ct   = int((scored["origin"] == "suggested").sum())
+with col5: st.metric("Placed vs Suggested", f"{placed_ct} / {sugg_ct}")
+
+placed_mask   = scored["origin"].eq("placed")
+resolved_mask = scored["outcome"].isin(["win","loss","push"])
+wins_placed   = int((placed_mask & scored["outcome"].eq("win")).sum())
+bets_placed   = int((placed_mask & resolved_mask).sum())
+win_pct       = (wins_placed / bets_placed) if bets_placed > 0 else 0.0
+with col6: st.metric("Wins / Bets (Placed)", f"{wins_placed} / {bets_placed}")
+with col7: st.metric("Win % (Placed)", f"{win_pct:.1%}")
+
+# --------------------------------------------------------------------------------------------------------------
+# Table
+# --------------------------------------------------------------------------------------------------------------
+st.subheader("Results")
+if scored.empty:
+    st.info("No rows to display. Add rows to exports/parlays.csv or exports/bets_log.csv.")
+else:
+    show_cols = [
+        "origin","outcome","sort_ts","placed_at","ts","sport","league","game_id",
+        "market","ref","side","line","odds","dec_odds","imp_prob","p_win","ev",
+        "stake","stake_used","pnl_realized","pnl_expected","result","payout",
+        "notes","parlay_id","leg_index"
+    ]
+    show_cols = [c for c in show_cols if c in scored.columns]
+    view = scored[show_cols].copy().sort_values("sort_ts", ascending=False, na_position="last")
+
+    for pc in ("imp_prob","p_win"):
+        if pc in view.columns:
+            view[pc] = pd.to_numeric(view[pc], errors="coerce").map(lambda v: f"{v:.1%}" if pd.notna(v) else "")
+
+    for mc in ("stake","stake_used","ev","payout","pnl_realized","pnl_expected"):
+        if mc in view.columns:
+            view[mc] = pd.to_numeric(view[mc], errors="coerce").map(lambda v: f"${v:,.2f}" if pd.notna(v) else "")
+
+    for tc in ("sort_ts","placed_at","ts"):
+        if tc in view.columns:
+            view[tc] = pd.to_datetime(view[tc], errors="coerce", utc=True).dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    st.dataframe(view, use_container_width=True, hide_index=True)
+    st.download_button(
+        "⬇️ Download filtered + scoring (CSV)",
+        data=scored.to_csv(index=False).encode("utf-8"),
+        file_name=f"bet_log_scored_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+    )
+
+# --------------------------------------------------------------------------------------------------------------
+# 🧩 Paste scores (quick add/replace into exports/results.csv)
+# --------------------------------------------------------------------------------------------------------------
+with st.expander("🧩 Paste scores → append to exports/results.csv", expanded=False):
+    st.markdown(
+        "Paste one game per line. Supported formats:\n"
+        "- `2025-09-17-DAL@PHI 17-27`\n"
+        "- `DAL@PHI 17-27`\n"
+        "- `DAL@PHI 17 27`\n"
+        "Optionally add team labels: `DAL@PHI 17-27, home=PHI, away=DAL`"
+    )
+    text = st.text_area("Lines", height=140, placeholder="2025-09-17-DAL@PHI 17-27\nGB@CHI 20 24")
+    if st.button("➕ Append/update results.csv"):
+        try:
+            cur = pd.read_csv(RESULTS, encoding="utf-8-sig")
+        except Exception:
+            cur = pd.DataFrame(columns=["game_id","home_score","away_score","home","away","total_points"])
+        if cur.empty:
+            cur = pd.DataFrame(columns=["game_id","home_score","away_score","home","away","total_points"])
+
+        rows = []
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            m = re.match(r"(?i)^(?:(\d{4}-\d{2}-\d{2})-)?([A-Z]{2,4})@([A-Z]{2,4})\s+(\d+)[-\s](\d+)(?:.*home=([A-Z]{2,4}))?(?:.*away=([A-Z]{2,4}))?", s)
+            if not m:
+                continue
+            date_part, away, home, hs, as_, home_lbl, away_lbl = m.groups()
+            gid = f"{date_part}-{away}@{home}" if date_part else f"{away}@{home}"
+            hs_i = int(hs); as_i = int(as_)
+            rows.append({
+                "game_id": gid,
+                "home_score": hs_i,
+                "away_score": as_i,
+                "home": (home_lbl or home).upper(),
+                "away": (away_lbl or away).upper(),
+                "total_points": hs_i + as_i
+            })
+
+        if rows:
+            new = pd.DataFrame(rows)
+            def norm_gid(g: str) -> str: return (g or "").strip().upper()
+            cur["_key"] = cur["game_id"].map(norm_gid)
+            new["_key"] = new["game_id"].map(norm_gid)
+            cur = cur[~cur["_key"].isin(new["_key"])].drop(columns=["_key"], errors="ignore")
+            out = pd.concat([cur, new.drop(columns=["_key"], errors="ignore")], ignore_index=True)
+            out.to_csv(RESULTS, index=False, encoding="utf-8")
+            st.success(f"Added/updated {len(new)} games into {RESULTS.name}. Reloading...")
+            st.rerun()
+        else:
+            st.warning("No valid lines parsed.")
+
+# --------------------------------------------------------------------------------------------------------------
+# 🏈 Fetch NFL Results (nflverse) — built-in
+# --------------------------------------------------------------------------------------------------------------
+with st.expander("🏈 Fetch NFL Results (nflverse)", expanded=False):
+    st.caption("Pull completed NFL games from nflverse and upsert into exports/results.csv")
+    colA, colB, colC = st.columns(3)
+    default_seasons = [date.today().year - 1, date.today().year]
+    seasons_text = colA.text_input("Seasons (space/comma sep)", value=" ".join(map(str, default_seasons)))
+    since_text   = colB.text_input("Since (YYYY-MM-DD, optional)", value="")
+    weeks_text   = colC.text_input("Weeks (space/comma sep, optional)", value="")
+
+    def _parse_ints(s: str) -> List[int]:
+        if not s.strip(): return []
+        s = s.replace(",", " ")
+        return [int(x) for x in s.split() if x.strip().isdigit()]
+
+    def _fetch_schedule_csv(season: int) -> Optional[pd.DataFrame]:
+        if requests is None:
+            st.error("`requests` package not available in this environment.")
+            return None
+        URLS = [
+            "https://raw.githubusercontent.com/nflverse/nflfastR-data/master/data/schedules/sched_{season}.csv",
+            "https://raw.githubusercontent.com/nflverse/nflfastR-data/master/data/schedules/schedules_{season}.csv",
+            "https://raw.githubusercontent.com/nflverse/nflverse-data/master/schedules/sched_{season}.csv",
+            "https://raw.githubusercontent.com/nflverse/nflverse-data/master/schedules/schedules_{season}.csv",
+        ]
+        last_err = None
+        for tmpl in URLS:
+            url = tmpl.format(season=season)
+            try:
+                r = requests.get(url, timeout=30)
+                if r.ok and r.text.strip():
+                    return pd.read_csv(io.StringIO(r.text))
+            except Exception as e:
+                last_err = e
+        if last_err:
+            st.warning(f"Failed to fetch season {season}: {last_err}")
+        else:
+            st.warning(f"Failed to fetch season {season} from known URLs.")
+        return None
+
+    def _build_results_from_schedule(df: pd.DataFrame, weeks: Optional[List[int]], since: Optional[str]) -> pd.DataFrame:
+        cols = {c.lower(): c for c in df.columns}
+        week    = cols.get("week")
+        gameday = cols.get("gameday") or cols.get("game_date") or cols.get("game_day") or cols.get("date")
+        home    = cols.get("home_team") or cols.get("home")
+        away    = cols.get("away_team") or cols.get("away")
+        hs      = cols.get("home_score") or cols.get("score_home") or cols.get("home_points")
+        as_     = cols.get("away_score") or cols.get("score_away") or cols.get("away_points")
+        finished = cols.get("game_finished") or cols.get("result") or cols.get("status")
+        if not all([gameday, home, away, hs, as_]):
+            return pd.DataFrame(columns=["game_id","home_score","away_score","home","away","total_points"])
+
+        out = df.copy()
+
+        if weeks and week in out.columns:
+            out = out[out[week].isin(list(weeks))]
+        if finished and finished in out.columns:
+            out = out[out[finished].astype(str).str.lower().isin(["true", "t", "1", "final", "post"])]
+        out = out[pd.to_numeric(out[hs], errors="coerce").notna() & pd.to_numeric(out[as_], errors="coerce").notna()]
+
+        if since:
+            out_date = pd.to_datetime(out[gameday], errors="coerce").dt.date
+            out = out[out_date >= pd.to_datetime(since).date()]
+
+        out["game_date"] = pd.to_datetime(out[gameday], errors="coerce").dt.date
+        out["home"] = out[home].astype(str).str.upper()
+        out["away"] = out[away].astype(str).str.upper()
+        out["home_score"] = pd.to_numeric(out[hs], errors="coerce").astype("Int64")
+        out["away_score"] = pd.to_numeric(out[as_], errors="coerce").astype("Int64")
+        out["game_id"] = out.apply(lambda r: f"{r['game_date']}-{r['away']}@{r['home']}", axis=1)
+        out["total_points"] = out["home_score"].astype(float) + out["away_score"].astype(float)
+        return out[["game_id", "home_score", "away_score", "home", "away", "total_points"]].dropna(subset=["home_score","away_score"])
+
+    if st.button("⬇️ Fetch & Upsert"):
+        seasons = _parse_ints(seasons_text) or default_seasons
+        weeks   = _parse_ints(weeks_text) or None
+        since   = since_text.strip() or None
+
+        all_rows = []
+        for s in seasons:
+            df_sched = _fetch_schedule_csv(s)
+            if df_sched is None:
+                continue
+            block = _build_results_from_schedule(df_sched, weeks=weeks, since=since)
+            if not block.empty:
+                all_rows.append(block)
+
+        if all_rows:
+            new = pd.concat(all_rows, ignore_index=True)
+            try:
+                cur = pd.read_csv(RESULTS, encoding="utf-8-sig")
+            except Exception:
+                cur = pd.DataFrame(columns=["game_id","home_score","away_score","home","away","total_points"])
+
+            def norm_gid(g: str) -> str: return (g or "").strip().upper()
+            cur["_key"] = cur["game_id"].map(norm_gid)
+            new["_key"] = new["game_id"].map(norm_gid)
+
+            cur = cur[~cur["_key"].isin(new["_key"])].drop(columns=["_key"], errors="ignore")
+            out = pd.concat([cur, new.drop(columns=["_key"], errors="ignore")], ignore_index=True)
+            out.to_csv(RESULTS, index=False, encoding="utf-8")
+            st.success(f"Upserted {len(new)} games into {RESULTS.name}. Reloading to settle...")
+            st.rerun()
+        else:
+            st.warning("No completed games fetched for the given filters.")
+
+# --------------------------------------------------------------------------------------------------------------
+# Settlement diagnostics (and skeleton writer)
+# --------------------------------------------------------------------------------------------------------------
+with st.expander("🔍 Settlement diagnostics", expanded=False):
+    debug = scored.copy()
+    open_parlays = debug[(debug["market"].str.upper() == "PARLAY") & (debug["outcome"] == "open")]
+    st.write(f"Open parlays: {len(open_parlays)}")
+
+    def explain(row):
+        legs = _safe_parse_legs(row.get("side") or row.get("ref"))
+        notes = []
+        for i, leg in enumerate(legs, start=1):
+            gid = leg.get("game_id") or leg.get("gid")
+            verdict = _settle_leg(leg, RESULTS_MAP)
+            mkt = str(leg.get("market",""))
+            sd  = str(leg.get("side",""))
+            ln  = str(leg.get("line",""))
+            if verdict == "open":
+                reason = []
+                if not gid or _lookup_result_for_gid(str(gid)) is None:
+                    reason.append("missing game_id in results")
+                if mkt.upper() in {"ATS","SPREAD","HANDICAP","TOTAL","OU","O/U","O-U"} and (ln in (None,"",pd.NA)):
+                    reason.append("missing line")
+                notes.append(f"Leg {i}: {mkt} {sd} {ln} (gid={gid}) -> OPEN ({'; '.join(reason) or 'unknown'})")
+            else:
+                notes.append(f"Leg {i}: {mkt} {sd} {ln} (gid={gid}) -> {verdict.upper()}")
+        return "\n".join(notes)
+
+    if not open_parlays.empty:
+        debug_view = open_parlays[["ts","ref","side","parlay_id","notes"]].copy()
+        debug_view["diagnostics"] = open_parlays.apply(explain, axis=1)
+        st.dataframe(debug_view, use_container_width=True, hide_index=True)
+
+        def build_needed_results(df: pd.DataFrame) -> pd.DataFrame:
+            rows = []
+            for _, r in df.iterrows():
+                legs = _safe_parse_legs(r.get("side") or r.get("ref"))
+                for leg in legs:
+                    gid = str(leg.get("game_id") or leg.get("gid") or "")
+                    if gid and _lookup_result_for_gid(gid) is None:
+                        _, fuzzy = _norm_gid(gid)
+                        rows.append({"game_id": gid, "matchup": fuzzy, "home_score": "", "away_score": "", "home": "", "away": ""})
+            if not rows:
+                return pd.DataFrame(columns=["game_id","matchup","home_score","away_score","home","away"])
+            out = pd.DataFrame(rows).drop_duplicates(subset=["game_id"])
+            return out
+
+        if st.button("➕ Write needed_results.csv (skeleton) to exports/"):
+            df_needed = build_needed_results(open_parlays)
+            fp = EXPORTS / "needed_results.csv"
+            df_needed.to_csv(fp, index=False, encoding="utf-8")
+            st.success(f"Wrote {fp} with {len(df_needed)} rows to fill.")
+    else:
+        st.write("No open parlays to diagnose.")
+
+# --------------------------------------------------------------------------------------------------------------
+# Weekly ROI (closed only) & by origin — uses defaulted stake=1 for blanks/zeros
+# --------------------------------------------------------------------------------------------------------------
+def weekly_roi_closed(df_closed: pd.DataFrame) -> pd.DataFrame:
+    out = df_closed.copy()
+    out["ts"] = pd.to_datetime(out.get("sort_ts") or out.get("ts"), errors="coerce")
+    out["stake_num"] = pd.to_numeric(out.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+    out["pnl_num"]   = pd.to_numeric(out.get("pnl_realized"), errors="coerce").fillna(0.0)
+    wk = (
+        out.set_index("ts")
+           .resample("W")
+           .agg(staked=("stake_num","sum"), pnl=("pnl_num","sum"))
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        wk["ROI%"] = (wk["pnl"] / wk["staked"].replace(0, np.nan)) * 100
+    return wk
+
+def weekly_roi_by_origin(df_closed: pd.DataFrame) -> pd.DataFrame:
+    out = df_closed.copy()
+    out["ts"] = pd.to_datetime(out.get("sort_ts") or out.get("ts"), errors="coerce")
+    out["stake_num"] = pd.to_numeric(out.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+    out["pnl_num"]   = pd.to_numeric(out.get("pnl_realized"), errors="coerce").fillna(0.0)
+    wk = (
+        out.groupby("origin")
+           .apply(lambda g: g.set_index("ts").resample("W").agg(staked=("stake_num","sum"), pnl=("pnl_num","sum")))
+           .reset_index()
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        wk["ROI%"] = (wk["pnl"] / wk["staked"].replace(0, np.nan)) * 100
+    return wk
+
+with st.expander("Charts & breakdowns", expanded=False):
+    try:
+        import matplotlib.pyplot as plt  # avoid import error on some envs
+        HAS_MPL = True
+    except Exception:
+        HAS_MPL = False
+
+    if not HAS_MPL:
+        st.info("Charts are disabled because matplotlib isn't installed. Install with: pip install matplotlib")
+    else:
+        # Weekly ROI% (closed only)
+        closed_mask = scored["outcome"].isin(["win","loss","push"])
+        df_closed = scored[closed_mask].copy()
+        if not df_closed.empty:
+            wk = weekly_roi_closed(df_closed)
+            if not wk.empty and not wk["ROI%"].dropna().empty:
+                fig = plt.figure()
+                wk["ROI%"].plot()
+                plt.ylabel("ROI %"); plt.title("Weekly ROI% (closed only)")
+                st.pyplot(fig)
+
+            # Weekly ROI% by origin
+            if "origin" in df_closed.columns and df_closed["origin"].notna().any():
+                wko = weekly_roi_by_origin(df_closed)
+                if not wko.empty and not wko["ROI%"].dropna().empty:
+                    fig, ax = plt.subplots()
+                    for origin, group in wko.groupby("origin"):
+                        ax.plot(group["ts"], group["ROI%"], marker="o", label=str(origin))
+                    ax.set_ylabel("ROI %")
+                    ax.set_title("Weekly ROI% by Origin")
+                    ax.legend()
+                    st.pyplot(fig)
+
+# --------------------------------------------------------------------------------------------------------------
+# Tables (normalize stake for display to show $1 default consistently)
+# --------------------------------------------------------------------------------------------------------------
+st.subheader("Open / Pending")
+open_like = {"open","beta-open","pending","beta-pending","paper","beta-paper"}
+open_df = scored[scored["outcome"] == "open"].copy()
+open_df["stake"] = pd.to_numeric(open_df.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+st.dataframe(
+    open_df[["origin","bet_id","market","ref","side","odds","stake","notes"]]
+    if "bet_id" in open_df.columns else
+    open_df[["origin","market","ref","side","odds","stake","notes"]],
+    use_container_width=True, hide_index=True
+)
+
+st.subheader("Closed / Settled")
+closed_df = scored[scored["outcome"].isin(["win","loss","push"])].copy()
+closed_df["stake"] = pd.to_numeric(closed_df.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+st.dataframe(
+    closed_df[["origin","ts","market","ref","side","odds","stake","result","pnl_realized","payout","notes"]]
+    if "payout" in closed_df.columns else
+    closed_df[["origin","ts","market","ref","side","odds","stake","result","pnl_realized","notes"]],
+    use_container_width=True, hide_index=True
+)
+
+st.subheader("All Entries (filtered)")
+all_df = filtered.copy()
+all_df["stake"] = pd.to_numeric(all_df.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+st.dataframe(
+    all_df[["origin","ts","market","ref","side","odds","p_win","ev","stake","result","notes"]],
+    use_container_width=True, hide_index=True
+)
+
+# --------------------------------------------------------------------------------------------------------------
+# Export filtered
+# --------------------------------------------------------------------------------------------------------------
+csv_bytes = scored.to_csv(index=False, encoding="utf-8").encode("utf-8")
+st.download_button(
+    "⬇️ Download filtered bets (scored).csv",
+    data=csv_bytes, file_name="filtered_bets_scored.csv", mime="text/csv"
+)
+
+# --------------------------------------------------------------------------------------------------------------
+# Normalize & Save whole log (writes back to bets_log.csv with current columns)
+# --------------------------------------------------------------------------------------------------------------
+if st.button("🧹 Normalize & Save bets_log.csv"):
+    # Recompose a saveable frame from base (before scoring) to avoid extra cols
+    to_save_cols = [c for c in BETLOG_COLS if c in bets_df.columns]
+    cleaned = bets_df[to_save_cols].copy() if not bets_df.empty else pd.DataFrame(columns=BETLOG_COLS)
+    cleaned.to_csv(BETS_LOG, index=False, encoding="utf-8")
+    st.success(f"Normalized and saved → {BETS_LOG}")
+    st.rerun()
+
+
+

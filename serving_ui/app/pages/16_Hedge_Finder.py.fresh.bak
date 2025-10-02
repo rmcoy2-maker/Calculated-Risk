@@ -1,0 +1,89 @@
+# 16_Hedge_Finder.py
+from __future__ import annotations
+from itertools import combinations
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+st.set_page_config(page_title="Hedge Finder", layout="wide")
+st.subheader("Hedge Finder")
+
+EDGES_CSV = Path(__file__).resolve().parents[3] / "exports" / "edges.csv"
+
+def read_csv_safe(p: Path) -> pd.DataFrame:
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    for kw in ({"encoding":"utf-8-sig"}, {}, {"engine":"python"}):
+        try: return pd.read_csv(p, **kw)
+        except Exception: continue
+    return pd.DataFrame()
+
+def load_edges() -> pd.DataFrame:
+    df = read_csv_safe(EDGES_CSV)
+    if df.empty: return df
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    for c in ("game_id","market","side","odds","book"):
+        if c not in df.columns: df[c] = ""
+    df["odds"] = pd.to_numeric(df["odds"], errors="coerce")
+    if "sort_ts" not in df.columns:
+        df["sort_ts"] = pd.to_datetime("1970-01-01") + pd.to_timedelta(np.arange(len(df)), unit="s")
+    return df
+
+def is_opposite(a: str, b: str, mode: str) -> bool:
+    if not a or not b: return False
+    A, B = a.strip().lower(), b.strip().lower()
+    if mode == "Strict (OU/Home-Away)":
+        pairs = {("over","under"), ("home","away")}
+        return (A, B) in pairs or (B, A) in pairs
+    return A != B
+
+df = load_edges()
+top = st.columns([1, 1, 2, 1])
+with top[0]:
+    newest_first = st.toggle("Newest first", value=True)
+with top[1]:
+    mode = st.selectbox("Side match", ["Strict (OU/Home-Away)", "Loose (any different)"], index=1)
+with top[2]:
+    odds_min, odds_max = st.slider("Odds window (American, abs)", 100, 300, (100, 200))
+with top[3]:
+    run = st.button("Find hedges", type="primary", use_container_width=True)
+
+if df.empty:
+    st.info("No edges found.")
+    st.stop()
+
+if "sort_ts" in df.columns:
+    df = df.sort_values("sort_ts", ascending=not newest_first, na_position="last")
+
+games = df["game_id"].dropna().astype(str).unique().tolist()
+game = st.selectbox("Game", ["All"] + games)
+
+subset = df if game == "All" else df[df["game_id"].astype(str) == game]
+subset = subset[subset["odds"].abs().between(odds_min, odds_max, inclusive="both")]
+
+if not run:
+    st.info("Adjust filters and click **Find hedges**.")
+    st.stop()
+
+rows = []
+for (gid, mkt), g in subset.groupby(["game_id", "market"], dropna=False):
+    g = g.reset_index(drop=True)
+    for i, j in combinations(range(len(g)), 2):
+        a, b = g.loc[i], g.loc[j]
+        if is_opposite(str(a.get("side","")), str(b.get("side","")), mode):
+            rows.append({
+                "game_id": str(gid),
+                "market": str(mkt),
+                "a_side": str(a.get("side","")), "a_odds": a.get("odds"), "a_book": str(a.get("book","")),
+                "b_side": str(b.get("side","")), "b_odds": b.get("odds"), "b_book": str(b.get("book","")),
+            })
+
+if not rows:
+    st.info("No hedges found at current filters.")
+else:
+    out = pd.DataFrame(rows)
+    st.dataframe(out, use_container_width=True)
+    st.download_button("Download hedges.csv", data=out.to_csv(index=False).encode("utf-8"),
+                       file_name="hedges.csv", mime="text/csv")

@@ -1,0 +1,253 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+import os
+import sys
+import subprocess
+from pathlib import Path
+from datetime import datetime, timezone
+import numpy as np
+import pandas as pd
+from lib.io_paths import autoload_edges, find_exports_dir
+df, df_path, root_path = autoload_edges(with_caption=True)
+if st.button('Refresh data', type='primary'):
+    from lib.io_paths import _read_cached
+    _read_cached.clear()
+    st.rerun()
+st.set_page_config(page_title='Edge Scanner', page_icon='🧭', layout='wide')
+
+
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+def find_repo_root() -> Path:
+    env = os.environ.get('EDGE_FINDER_ROOT')
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+    here = Path(__file__).resolve()
+    for up in [here] + list(here.parents):
+        if (up / 'exports').exists() and ((up / 'db').exists() or (up / 'tools').exists()):
+            return up
+    return Path.cwd()
+REPO = find_repo_root()
+EXPORTS = REPO / 'exports'
+DB = REPO / 'db'
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+def find_scanner() -> Path | None:
+    cands = [REPO / 'tools' / 'scan_edges.py', REPO / 'serving' / 'scan_edges.py', REPO / 'serving_ui' / 'scan_edges.py']
+    for p in cands:
+        if p.exists():
+            return p
+    return None
+
+def newest_existing(paths: list[Path]) -> Path | None:
+    paths = [p for p in paths if p.exists()]
+    if not paths:
+        return None
+    return max(paths, key=lambda p: p.stat().st_mtime)
+
+def read_edges() -> tuple[pd.DataFrame, Path | None]:
+    cands = [EXPORTS / 'edges.csv', EXPORTS / 'edges_graded_wlp_clean.csv', EXPORTS / 'edges_graded_wlp.csv', EXPORTS / 'edges_graded.csv']
+    pick = newest_existing(cands)
+    if pick is None:
+        cols = ['game_id', 'market', 'side', 'book', 'odds', 'p_win']
+        return (pd.DataFrame(columns=cols), None)
+    try:
+        df = pd.read_csv(pick)
+    except Exception as e:
+        st.error(f'Failed to read {pick}: {e}')
+        return (pd.DataFrame(), pick)
+    if 'odds' in df.columns:
+        df['odds'] = pd.to_numeric(df['odds'], errors='coerce')
+    if 'p_win' in df.columns:
+        df['p_win'] = pd.to_numeric(df['p_win'], errors='coerce')
+    return (df, pick)
+
+def fmt_age(p: Path) -> str:
+    age_sec = max(0, int(datetime.now(tz=timezone.utc).timestamp() - p.stat().st_mtime))
+    if age_sec < 60:
+        return f'{age_sec}s ago'
+    mins = age_sec // 60
+    if mins < 60:
+        return f'{mins}m ago'
+    hrs = mins // 60
+    if hrs < 48:
+        return f'{hrs}h ago'
+    days = hrs // 24
+    return f'{days}d ago'
+
+def sample_edges_file():
+    out = EXPORTS / 'edges.csv'
+    data = [{'game_id': 'Arizona Cardinals@San Francisco 49ers_2025-09-21T20:26:00Z', 'market': 'moneyline', 'side': 'ARIZONA', 'book': 'sample', 'odds': +245, 'p_win': 0.29}, {'game_id': 'Dallas Cowboys@Chicago Bears_2025-09-21T20:25:00Z', 'market': 'moneyline', 'side': 'CHICAGO', 'book': 'sample', 'odds': -115, 'p_win': 0.53}]
+    pd.DataFrame(data).to_csv(out, index=False)
+    return out
+st.title('Edge Scanner')
+colA, colB, colC = st.columns([1, 1, 3])
+with colA:
+    if st.button('Write sample edges.csv'):
+        out = sample_edges_file()
+        st.success(f'Wrote {out}')
+scanner_path = find_scanner()
+with colB:
+    btn = st.button('Scan now')
+with colC:
+    st.caption(f"files: edges={EXPORTS / 'edges.csv'} | odds snapshot={DB / 'odds_books.csv'}")
+edges, picked = read_edges()
+scan_out = None
+if btn:
+    if not scanner_path:
+        st.error('No scanner found (expected `tools/scan_edges.py`).')
+    else:
+        with st.status(f'Running scanner: {scanner_path.name}', expanded=True) as status:
+            try:
+                proc = subprocess.run([sys.executable, str(scanner_path)], cwd=str(scanner_path.parent), capture_output=True, text=True, timeout=180)
+                scan_out = (proc.returncode, proc.stdout, proc.stderr)
+                if proc.returncode == 0:
+                    status.update(label='Scan complete', state='complete')
+                else:
+                    status.update(label=f'Scan failed (code {proc.returncode})', state='error')
+            except Exception as e:
+                scan_out = (-1, '', str(e))
+                st.error(f'Scanner exception: {e}')
+        edges, picked = read_edges()
+with st.expander('Diagnostics', expanded=False):
+    st.write(f'repo root: {REPO}')
+    st.write(f'exports: {EXPORTS}')
+    st.write(f"books csv: {DB / 'odds_books.csv'}  (exists={(DB / 'odds_books.csv').exists()})")
+    st.write(f'scanner: {(scanner_path if scanner_path else None)}')
+    if picked and picked.exists():
+        st.write(f'loaded: {picked}  (age {fmt_age(picked)})')
+        st.write(f'edges rows: {len(edges):,}')
+    if scan_out:
+        rc, out, err = scan_out
+        st.write(f'scan return code: {rc}')
+        if out:
+            st.code(out.strip(), language='bash')
+        if err:
+            st.code(err.strip(), language='bash')
+st.divider()
+left, right = st.columns(2)
+with left:
+    min_ev = st.slider('Min EV (per $1)', min_value=0.0, max_value=1.0, value=0.0, step=0.05)
+with right:
+    min_p = st.slider('Min p_win (model or implied)', min_value=0.0, max_value=1.0, value=0.45, step=0.01)
+
+def american_to_prob(o):
+    if pd.isna(o):
+        return np.nan
+    o = float(o)
+    if o >= 100:
+        return 100.0 / (o + 100.0)
+    return abs(o) / (abs(o) + 100.0)
+
+def american_to_payout(o):
+    if pd.isna(o):
+        return np.nan
+    o = float(o)
+    return o / 100.0 if o > 0 else 100.0 / abs(o)
+
+def pick_col(df: pd.DataFrame, names: list[str]) -> str | None:
+    for n in names:
+        if n in df.columns:
+            return n
+    return None
+odds_us_col = pick_col(edges, ['odds', 'american_odds', 'odds_american', 'us_odds'])
+odds_dec_col = pick_col(edges, ['odds_decimal', 'decimal_odds', 'dec_odds'])
+for col in [odds_us_col, odds_dec_col]:
+    if col:
+        edges[col] = pd.to_numeric(edges[col], errors='coerce')
+need_p = 'p_win' not in edges.columns or edges['p_win'].isna().all()
+if need_p:
+    if odds_us_col:
+        edges['p_win'] = edges[odds_us_col].map(american_to_prob)
+    elif odds_dec_col:
+        edges['p_win'] = 1.0 / edges[odds_dec_col]
+    else:
+        edges['p_win'] = np.nan
+edges['_payout_per_$1'] = np.nan
+if odds_us_col:
+    edges['_payout_per_$1'] = edges[odds_us_col].map(american_to_payout)
+elif odds_dec_col:
+    edges['_payout_per_$1'] = edges[odds_dec_col] - 1.0
+if 'p_win' in edges.columns and '_payout_per_$1' in edges.columns:
+    edges['ev/$1'] = edges['p_win'] * edges['_payout_per_$1'] - (1 - edges['p_win'])
+else:
+    edges['ev/$1'] = np.nan
+flt = (edges['ev/$1'].fillna(-9) >= min_ev) & (edges['p_win'].fillna(0) >= min_p)
+edges_view = edges.loc[flt].copy()
+cols = [c for c in ['game_id', 'market', 'side', 'book', 'odds', 'p_win', 'ev/$1', 'line', 'source', 'ts'] if c in edges_view.columns]
+st.dataframe(edges_view[cols].reset_index(drop=True), height=520, width='stretch')
+st.caption(f'Rows after filters: {len(edges_view):,}')
+csv = edges_view[cols].to_csv(index=False).encode('utf-8')
+st.download_button('Download filtered edges.csv', csv, file_name='edges_filtered.csv', mime='text/csv')
+
+
+
+
+

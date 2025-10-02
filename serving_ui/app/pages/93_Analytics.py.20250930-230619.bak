@@ -1,0 +1,513 @@
+# -*- coding: utf-8 -*-
+"""
+97_Analytics.py — Edge Finder
+Premium Analytics dashboard for exported "computer likes" with outcome backfill.
+
+Sections
+- Load master_likes (Parquet) + optional uploads for scores/closing lines
+- Filters: season, week, market, book, settled/Unsettled
+- Metrics: count, win rate, ROI (flat $1), CLV beat %, calibration/Brier/LogLoss
+- Buttons: Backfill outcomes, Export training slice (CSV/Parquet)
+
+Deps: pandas, numpy, altair, pyarrow; uses likes_export.py utilities if present.
+"""
+from __future__ import annotations
+
+import io
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ---------------- App/Page Config ----------------
+st.set_page_config(page_title="97 • Analytics", page_icon="📊", layout="wide")
+
+# === AccessImportGuard (soft) ===
+try:
+    from app.lib.access import require_allowed_page, beta_banner, live_enabled, premium_enabled  # type: ignore
+except Exception:
+    def require_allowed_page(_page_path: str) -> None: return None
+    def beta_banner() -> None:
+        st.caption("🧪 Beta mode — access module missing; using shim.")
+    def live_enabled() -> bool: return False
+    def premium_enabled() -> bool:
+        # Fallback heuristic: allow if secrets has a PREMIUM flag or if running locally
+        try:
+            return bool(st.secrets.get("PREMIUM", False))
+        except Exception:
+            return True
+
+require_allowed_page(__file__)
+
+# --- Premium gate ---
+if not premium_enabled():
+    st.error("This page is available for premium users only.")
+    st.stop()
+
+# === Repo roots & paths ===
+APP_DIR = Path(__file__).resolve().parent
+ROOT    = APP_DIR.parent.parent  # repo root (serving_ui/app/pages/.. -> serving_ui)
+DATA_DIR = ROOT / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_MASTER = DATA_DIR / "master_likes.parquet"
+
+# === likes_export utilities (optional but recommended) ===
+try:
+    from app.utils.likes_export import backfill_outcomes, build_training_view  # type: ignore
+except Exception:
+    # fallback shims so page still mostly works
+    def backfill_outcomes(**kwargs) -> int:
+        st.warning("likes_export.backfill_outcomes not found — backfill disabled.")
+        return 0
+    def build_training_view(master_path: str | Path, **kwargs) -> pd.DataFrame:
+        return pd.read_parquet(master_path)
+
+# ---------------- Helpers ----------------
+
+def american_to_decimal(odds: float | int | None) -> float | None:
+    if odds is None or pd.isna(odds):
+        return None
+    o = float(odds)
+    if o > 0:
+        return 1.0 + (o / 100.0)
+    else:
+        return 1.0 + (100.0 / abs(o))
+
+
+def implied_prob_from_american(odds: float | int | None) -> float | None:
+    if odds is None or pd.isna(odds):
+        return None
+    o = float(odds)
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    else:
+        return abs(o) / (abs(o) + 100.0)
+
+
+def roi_flat_stake(df: pd.DataFrame) -> float:
+    """ROI for $1 flat stake using payout_odds or decimal_odds. Requires hit_bool.
+    ROI = (return - stake) / stake, where stake is $1 per settled pick.
+    """
+    w = df.copy()
+    w = w[pd.notna(w.get("hit_bool"))]
+    if w.empty:
+        return float("nan")
+    dec = None
+    if "decimal_odds" in w.columns and w["decimal_odds"].notna().any():
+        dec = w["decimal_odds"].astype(float)
+    elif "payout_odds" in w.columns and w["payout_odds"].notna().any():
+        dec = w["payout_odds"].apply(american_to_decimal).astype(float)
+    else:
+        # assume -110 if missing
+        dec = pd.Series([1.909] * len(w), index=w.index, dtype=float)
+    returns = w["hit_bool"].astype(float) * (dec - 1.0)
+    stake = len(w)
+    total_return = returns.sum()
+    return float((total_return - stake) / stake)
+
+
+def beat_closing_bool(row: pd.Series) -> float | None:
+    """Heuristic: did our line beat the closing line for the chosen side/market?
+    Spread: if side="home" -> our line_at_pick > closing_line is better (less negative / more cushion)
+            if side="away" -> our line_at_pick < closing_line is better (more positive for away underdogs)
+    Total:  if side in {"over"} -> prefer LOWER pick line than closing (closing_line > pick)
+            if side in {"under"} -> prefer HIGHER pick line than closing (closing_line < pick)
+    Returns 1.0/0.0/None.
+    """
+    try:
+        mkt = str(row.get("market", "")).lower()
+        side = str(row.get("side", "")).lower()
+        pick = float(row.get("line_at_pick"))
+        close = float(row.get("closing_line"))
+    except Exception:
+        return None
+    if any(pd.isna(x) for x in [pick, close]):
+        return None
+
+    if "spread" in mkt:
+        if side == "home" or side == str(row.get("home", "")).lower():
+            return 1.0 if pick > close else 0.0
+        if side == "away" or side == str(row.get("away", "")).lower():
+            return 1.0 if pick < close else 0.0
+        return None
+    if "total" in mkt or mkt.startswith("o/"):
+        if side in ("over", "o"):
+            return 1.0 if close > pick else 0.0
+        if side in ("under", "u"):
+            return 1.0 if close < pick else 0.0
+        return None
+    return None
+
+
+def reliability_curve(df: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
+    w = df.copy()
+    w = w[pd.notna(w.get("model_prob")) & pd.notna(w.get("hit_bool"))]
+    if w.empty:
+        return pd.DataFrame(columns=["bin_low", "bin_high", "pred", "actual", "count"])
+    bins = pd.cut(w["model_prob"].astype(float), bins=n_bins, include_lowest=True)
+    g = w.groupby(bins)
+    out = g.agg(pred=("model_prob", "mean"), actual=("hit_bool", "mean"), count=("hit_bool", "size"))
+    out = out.reset_index()
+    out.rename(columns={"model_prob": "pred"}, inplace=True)
+    out["bin_low"] = out["model_prob"].apply(lambda x: x.left if hasattr(x, "left") else np.nan)
+    out["bin_high"] = out["model_prob"].apply(lambda x: x.right if hasattr(x, "right") else np.nan)
+    return out[["bin_low", "bin_high", "pred", "actual", "count"]]
+
+
+def brier_score(df: pd.DataFrame) -> float:
+    w = df.copy()
+    w = w[pd.notna(w.get("model_prob")) & pd.notna(w.get("hit_bool"))]
+    if w.empty:
+        return float("nan")
+    p = w["model_prob"].astype(float)
+    y = w["hit_bool"].astype(float)
+    return float(np.mean((p - y) ** 2))
+
+
+def log_loss(df: pd.DataFrame, eps: float = 1e-9) -> float:
+    w = df.copy()
+    w = w[pd.notna(w.get("model_prob")) & pd.notna(w.get("hit_bool"))]
+    if w.empty:
+        return float("nan")
+    p = w["model_prob"].astype(float).clip(eps, 1 - eps)
+    y = w["hit_bool"].astype(float)
+    return float(-(y * np.log(p) + (1 - y) * np.log(1 - p)).mean())
+
+# ---------------- UI ----------------
+
+st.title("📊 Analytics")
+beta_banner()
+
+# --- Load master ---
+with st.sidebar:
+    st.header("Data Sources")
+    master_path = st.text_input("Master likes (Parquet)", value=str(DEFAULT_MASTER))
+    file_master = st.file_uploader("Or upload master_likes.parquet", type=["parquet"], accept_multiple_files=False)
+
+    scores_up = st.file_uploader("Upload final scores (CSV/Parquet)", type=["csv", "parquet"], key="scores")
+    closing_up = st.file_uploader("Upload closing lines (CSV/Parquet)", type=["csv", "parquet"], key="closing")
+
+    st.markdown("---")
+    st.caption("Tip: Master is created by the Likes Export button on picks pages.")
+
+# Helper to read parquet or uploaded
+@st.cache_data(show_spinner=False)
+def _read_parquet_or_uploaded_cached(path: str, uploaded_key: str) -> pd.DataFrame | None:
+    uploaded = st.session_state.get(uploaded_key)
+    if uploaded is not None:
+        try:
+            return pd.read_parquet(uploaded)
+        except Exception as e:
+            st.error(f"Failed to read upload: {e}")
+            return None
+    p = Path(path)
+    if p.exists():
+        try:
+            return pd.read_parquet(p)
+        except Exception as e:
+            st.error(f"Failed to read {p}: {e}")
+            return None
+    return None
+
+# Store uploads in session so cache key is stable
+if file_master is not None:
+    st.session_state["_upload_master"] = file_master
+if scores_up is not None:
+    st.session_state["_upload_scores"] = scores_up
+if closing_up is not None:
+    st.session_state["_upload_closing"] = closing_up
+
+master_df = _read_parquet_or_uploaded_cached(master_path, "_upload_master")
+if master_df is None:
+    st.info("No master likes loaded yet. Export some picks first.")
+    st.stop()
+
+# --- Filters ---
+with st.sidebar:
+    st.header("Filters")
+    seasons = sorted(master_df["season"].dropna().unique().tolist()) if "season" in master_df.columns else []
+    weeks = sorted(master_df["week"].dropna().unique().tolist()) if "week" in master_df.columns else []
+    markets = sorted(master_df["market"].dropna().unique().tolist()) if "market" in master_df.columns else []
+    books = sorted(master_df["book"].dropna().unique().tolist()) if "book" in master_df.columns else []
+
+    sel_seasons = st.multiselect("Season", seasons, default=seasons[-3:] if seasons else [])
+    sel_weeks = st.multiselect("Week", weeks, default=weeks[-4:] if weeks else [])
+    sel_markets = st.multiselect("Market", markets, default=markets)
+    sel_books = st.multiselect("Book", books, default=books)
+    settled_only = st.checkbox("Settled only", value=False, help="Only rows with W/L result.")
+
+work = master_df.copy()
+if sel_seasons:
+    work = work[work["season"].isin(sel_seasons)]
+if sel_weeks:
+    work = work[work["week"].isin(sel_weeks)]
+if sel_markets:
+    work = work[work["market"].isin(sel_markets)]
+if sel_books:
+    work = work[work["book"].isin(sel_books)]
+if settled_only and "result" in work.columns:
+    work = work[work["result"].isin(["W", "L"])].copy()
+
+# --- Backfill outcomes ---
+colA, colB, colC = st.columns([1,1,2])
+with colA:
+    st.subheader("Backfill")
+    if st.button("🧩 Backfill Outcomes", help="Merge finals + closing lines into master, compute result/CLV."):
+        scores_df = _read_parquet_or_uploaded("", scores_up)
+        closing_df = _read_parquet_or_uploaded("", closing_up)
+        if scores_df is None:
+            st.error("Please upload final scores.")
+        else:
+            try:
+                updated = backfill_outcomes(master_path=Path(master_path), scores_df=scores_df, closing_lines_df=closing_df)
+                st.success(f"Backfilled {updated} fields. Reloading…")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Backfill failed: {e}")
+
+with colB:
+    st.subheader("Export")
+    # Build training view and offer download
+    try:
+        tv = build_training_view(master_path)
+    except Exception:
+        tv = work.copy()
+    buf_csv = io.StringIO()
+    tv.to_csv(buf_csv, index=False)
+    st.download_button("⬇️ Download Training View (CSV)", data=buf_csv.getvalue(), file_name="training_view.csv", mime="text/csv")
+
+    buf_parq = io.BytesIO()
+    try:
+        tv.to_parquet(buf_parq, index=False)
+        st.download_button("⬇️ Download Training View (Parquet)", data=buf_parq.getvalue(), file_name="training_view.parquet", mime="application/octet-stream")
+    except Exception:
+        st.caption("Install pyarrow for Parquet download.")
+
+with colC:
+    st.subheader("Summary")
+    total = len(work)
+    settled = work[work["result"].isin(["W","L"])].copy() if "result" in work.columns else pd.DataFrame()
+    win_rate = (settled["result"].eq("W").mean() if not settled.empty else np.nan)
+    roi = roi_flat_stake(settled) if not settled.empty else float("nan")
+
+    st.metric("Rows (filtered)", f"{total:,}")
+    st.metric("Win rate (settled)", f"{win_rate*100:0.1f}%" if not np.isnan(win_rate) else "—")
+    st.metric("ROI (flat $1)", f"{roi*100:0.1f}%" if not np.isnan(roi) else "—")
+
+# --- Table ---
+st.markdown("### Master Likes (filtered)")
+show_cols_pref = [c for c in ["season","week","game_id","home","away","market","side","model_prob","edge","line_at_pick","book","payout_odds","decimal_odds","result","closing_line","closing_odds","realized_edge","hit_bool","timestamp"] if c in work.columns]
+st.dataframe(work[show_cols_pref].sort_values(["season","week","timestamp"], ascending=[True,True,False]), use_container_width=True)
+
+# --- Charts ---
+st.markdown("---")
+st.subheader("Calibration & CLV")
+
+try:
+    import altair as alt
+    show_charts = True
+except Exception:
+    st.info("Install altair for charts: pip install altair")
+    show_charts = False
+
+if show_charts:
+    left, right = st.columns(2)
+    with left:
+        rel = reliability_curve(work, n_bins=10)
+        if rel.empty:
+            st.caption("Not enough settled picks for calibration chart.")
+        else:
+            chart = alt.Chart(rel).mark_line(point=True).encode(
+                x=alt.X("pred:Q", title="Predicted win probability"),
+                y=alt.Y("actual:Q", title="Actual win rate"),
+                tooltip=["bin_low","bin_high","pred","actual","count"]
+            ).properties(height=320)
+            diag = alt.Chart(pd.DataFrame({"x":[0,1],"y":[0,1]})).mark_line(strokeDash=[4,4])\
+                .encode(x="x", y="y")
+            st.altair_chart(chart + diag, use_container_width=True)
+            st.caption(f"Brier: {brier_score(work):0.4f} • LogLoss: {log_loss(work):0.4f}")
+
+    with right:
+        clv_work = work.copy()
+        if "closing_line" in clv_work.columns and clv_work["closing_line"].notna().any():
+            clv_work["beat_closing"] = clv_work.apply(beat_closing_bool, axis=1)
+            bc = clv_work["beat_closing"].dropna()
+            pct = float(bc.mean()) if not bc.empty else float("nan")
+            bar = alt.Chart(pd.DataFrame({"Metric":["Beat Closing %"], "Value":[pct*100 if not np.isnan(pct) else 0]})).mark_bar().encode(x="Metric:N", y="Value:Q")
+            st.altair_chart(bar, use_container_width=True)
+            st.caption(f"Beat closing: {pct*100:0.1f}%" if not np.isnan(pct) else "Beat closing: —")
+        else:
+            st.caption("No closing_line data to compute CLV.")
+
+# --- Advanced Add‑ons ---------------------------------------------------------
+
+st.markdown("---")
+st.header("Premium Add‑ons")
+
+# Ensure helper columns
+if "closing_line" in master_df.columns and ("beat_closing" not in master_df.columns or master_df["beat_closing"].isna().all()):
+    try:
+        master_df["beat_closing"] = master_df.apply(beat_closing_bool, axis=1)
+    except Exception:
+        pass
+
+# ---- 1) Staking Simulator ---------------------------------------------------
+st.subheader("💰 Staking Simulator")
+colS1, colS2, colS3 = st.columns([2,1,1])
+with colS1:
+    sim_scheme = st.selectbox("Scheme", ["Flat $1", "Kelly", "Capped Kelly (5%)"], index=0)
+with colS2:
+    bankroll0 = st.number_input("Starting Bankroll", min_value=10.0, value=1000.0, step=10.0)
+with colS3:
+    order_by = st.selectbox("Order by", ["timestamp", "season-week-game"], index=0)
+
+sim_df = work.copy()
+# settle-only for sim
+sim_df = sim_df[pd.notna(sim_df.get("hit_bool"))].copy()
+
+# derive decimal odds for payout
+if "decimal_odds" in sim_df.columns and sim_df["decimal_odds"].notna().any():
+    dec = sim_df["decimal_odds"].astype(float)
+else:
+    dec = sim_df["payout_odds"].apply(american_to_decimal) if "payout_odds" in sim_df.columns else pd.Series([1.909]*len(sim_df), index=sim_df.index)
+
+# sort
+if order_by == "timestamp" and "timestamp" in sim_df.columns:
+    sim_df = sim_df.sort_values("timestamp")
+else:
+    sim_df = sim_df.sort_values(["season","week","game_id"]) if all(c in sim_df.columns for c in ["season","week","game_id"]) else sim_df
+
+# position sizing
+p = sim_df.get("model_prob").astype(float).clip(1e-6, 1-1e-6) if "model_prob" in sim_df.columns else pd.Series([0.5]*len(sim_df), index=sim_df.index)
+edge_price = dec - 1.0
+b = edge_price - 1.0  # b in Kelly formula is odds net (decimal-1)
+kelly_f = (p*(b+1) - 1) / b
+kelly_f = kelly_f.clip(lower=0.0)  # no shorting
+
+stake = None
+if sim_scheme == "Flat $1":
+    stake = pd.Series(1.0, index=sim_df.index)
+elif sim_scheme == "Kelly":
+    stake = kelly_f * bankroll0
+else:
+    stake = (kelly_f.clip(upper=0.05)) * bankroll0
+
+returns = sim_df["hit_bool"].astype(float) * (dec - 1.0) * stake - stake
+bankroll = bankroll0 + returns.cumsum()
+
+colL, colR = st.columns([3,1])
+with colL:
+    try:
+        import altair as alt
+        chart = alt.Chart(pd.DataFrame({"idx": np.arange(len(bankroll)), "Bankroll": bankroll.values})).mark_line().encode(x="idx:Q", y="Bankroll:Q")
+        st.altair_chart(chart, use_container_width=True)
+    except Exception:
+        st.line_chart(bankroll)
+with colR:
+    total_ret = bankroll.iloc[-1] - bankroll0 if len(bankroll) else 0.0
+    st.metric("Ending Bankroll", f"${(bankroll.iloc[-1] if len(bankroll) else bankroll0):,.2f}")
+    st.metric("Total Return", f"${total_ret:,.2f}")
+
+# ---- 2) Model Comparison ----------------------------------------------------
+st.subheader("🧪 Model Comparison")
+if "model_name" in master_df.columns:
+    cmp_df = work.copy()
+    cmp_df = cmp_df[pd.notna(cmp_df.get("hit_bool"))]
+    if cmp_df.empty:
+        st.caption("No settled rows to compare.")
+    else:
+        grp = cmp_df.groupby("model_name").agg(
+            picks=("hit_bool","size"),
+            win_rate=("hit_bool","mean"),
+            avg_edge=("edge","mean"),
+        ).reset_index()
+        # ROI per model
+        def _roi_sub(df):
+            return roi_flat_stake(df)
+        roi_vals = cmp_df.groupby("model_name", group_keys=False).apply(_roi_sub)
+        grp["roi"] = grp["model_name"].map(roi_vals)
+        st.dataframe(grp.sort_values(["roi","win_rate"], ascending=False), use_container_width=True)
+else:
+    st.caption("Add a 'model_name' column to master to unlock model comparison.")
+
+# ---- 3) Cohort Drilldowns ---------------------------------------------------
+st.subheader("🔎 Cohort Drilldowns")
+coh_cols = [c for c in ["market","book","week","season"] if c in master_df.columns]
+coh_pick = st.multiselect("Group by", coh_cols, default=[c for c in ["market","book"] if c in coh_cols])
+if coh_pick:
+    coh = work.copy()
+    coh = coh[pd.notna(coh.get("hit_bool"))]
+    if not coh.empty:
+        agg = coh.groupby(coh_pick).agg(
+            picks=("hit_bool","size"),
+            win_rate=("hit_bool","mean"),
+            roi=("hit_bool", lambda s: roi_flat_stake(coh.loc[s.index])),
+            mean_edge=("edge","mean"),
+            beat_closing=("beat_closing","mean") if "beat_closing" in coh.columns else ("hit_bool","mean"),
+        ).reset_index()
+        st.dataframe(agg.sort_values("roi", ascending=False), use_container_width=True)
+    else:
+        st.caption("No settled rows for cohorts.")
+else:
+    st.caption("Pick at least one grouping column.")
+
+# ---- 4) Drift Alerts --------------------------------------------------------
+st.subheader("🚨 Drift Alerts")
+lookback_weeks = st.slider("Lookback (weeks)", min_value=2, max_value=12, value=6, step=1)
+if "timestamp" in master_df.columns:
+    ddf = master_df.copy()
+    ddf = ddf.sort_values("timestamp")
+    recent = ddf.tail(lookback_weeks*50)  # heuristic number of rows per week
+    prior = ddf.iloc[:-len(recent)] if len(ddf) > len(recent) else pd.DataFrame()
+    def _mean(x):
+        x = pd.to_numeric(x, errors="coerce"); return float(x.mean()) if len(x.dropna()) else float("nan")
+    rows = []
+    for col in ["model_prob","edge","realized_edge"]:
+        if col in ddf.columns:
+            rows.append({
+                "metric": col,
+                "recent_mean": _mean(recent[col]),
+                "prior_mean": _mean(prior[col]) if not prior.empty else float("nan"),
+                "delta": (_mean(recent[col]) - _mean(prior[col])) if not prior.empty else float("nan"),
+            })
+    drift_tbl = pd.DataFrame(rows)
+    st.dataframe(drift_tbl, use_container_width=True)
+    # Simple flags
+    alerts = []
+    for _, r in drift_tbl.iterrows():
+        if pd.notna(r["delta"]) and abs(r["delta"]) > 0.05:
+            alerts.append(f"{r['metric']} shifted by {r['delta']:+.3f}")
+    if alerts:
+        st.warning("\n".join(alerts))
+else:
+    st.caption("Timestamp column required for drift checks.")
+
+# ---- 5) CLV Heatmap ---------------------------------------------------------
+st.subheader("🔥 CLV Heatmap")
+if "beat_closing" in master_df.columns and "book" in master_df.columns and "market" in master_df.columns:
+    clv = master_df.copy()
+    clv = clv[pd.notna(clv.get("beat_closing"))]
+    if not clv.empty:
+        pivot = clv.pivot_table(index="book", columns="market", values="beat_closing", aggfunc="mean")
+        st.dataframe((pivot*100).round(1).fillna("—"), use_container_width=True)
+    else:
+        st.caption("No rows with beat_closing computed.")
+else:
+    st.caption("Need columns: book, market, beat_closing.")
+
+# ---- 6) Leak‑free Training Window ------------------------------------------
+st.subheader("🧯 Leak‑free Training Window")
+if "timestamp" in master_df.columns:
+    min_dt = pd.to_datetime(master_df["timestamp"].min())
+    max_dt = pd.to_datetime(master_df["timestamp"].max())
+    cutoff = st.slider("Training cutoff (only rows BEFORE this are exported)", min_value=min_dt, max_value=max_dt, value=min_dt + (max_dt - min_dt) / 2)
+    leakfree = work.copy()
+    leakfree = leakfree[pd.to_datetime(leakfree["timestamp"]) < cutoff]
+    buf_csv2 = io.StringIO(); leakfree.to_csv(buf_csv2, index=False)
+    st.download_button("⬇️ Download Leak‑free Slice (CSV)", data=buf_csv2.getvalue(), file_name="training_leakfree.csv", mime="text/csv")
+else:
+    st.caption("Timestamp column required to build leak‑free slices.")
+
+# Footer
+st.markdown(":gray[Analytics page · v0.2 — staking sim, model compare, cohorts, drift, CLV heatmap, leak‑free export.]")

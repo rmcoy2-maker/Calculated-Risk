@@ -1,0 +1,22 @@
+import streamlit as st
+from pathlib import Path
+
+_ASSETS = Path(__file__).resolve().parents[2] / "assets"
+
+def header(title: str = "Calculated Risk â€“ Home"):
+    # inject CSS once
+    css_path = _ASSETS / "app.css"
+    if css_path.exists():
+        st.markdown(f"<style>{css_path.read_text()}</style>", unsafe_allow_html=True)
+
+    cols = st.columns([0.08, 0.92])
+    with cols[0]:
+        logo = _ASSETS / "calculated_risk_logo.png"
+        if logo.exists():
+            st.image(str(logo), use_container_width=True)
+    with cols[1]:
+        st.title(title)
+
+
+
+

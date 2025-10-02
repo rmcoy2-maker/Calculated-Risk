@@ -1,0 +1,73 @@
+import io, zipfile
+import pandas as pd
+import streamlit as st
+from pathlib import Path
+
+from serving_ui.app._layout import header
+from app.lib.betlog import read_log
+
+header("Reports (Bundle)")
+
+df = read_log()
+if df.empty:
+    st.warning("No bets in log.")
+    st.stop()
+df.columns = [c.strip().lower() for c in df.columns]
+settled = df[~df.get("result","").astype(str).str.lower().isin(["","open"])].copy()
+
+def _num(x): return pd.to_numeric(x, errors="coerce").fillna(0.0)
+
+by_market = settled.groupby("market", dropna=True).agg(bets=("stake","count"), stake=("stake", _num), profit=("payout", _num)).reset_index()
+by_market["roi_%"] = by_market["profit"]/by_market["stake"]*100.0
+
+by_month = settled.copy()
+if "ts" in by_month.columns:
+    by_month["ts"] = pd.to_datetime(by_month["ts"], errors="coerce", utc=True)
+    by_month["period"] = by_month["ts"].dt.to_period("M").dt.to_timestamp()
+else:
+    by_month["period"] = "n/a"
+by_month = by_month.groupby("period").agg(bets=("stake","count"), stake=("stake", _num), profit=("payout", _num)).reset_index()
+by_month["roi_%"] = by_month["profit"]/by_month["stake"]*100.0
+
+# --- model_version rollups ---
+if "model_version" in settled.columns:
+    by_modelver = settled.groupby("model_version", dropna=True).agg(
+        bets=("stake","count"),
+        stake=("stake", _num),
+        profit=("payout", _num),
+    ).reset_index()
+    by_modelver["roi_%"] = by_modelver["profit"]/by_modelver["stake"]*100.0
+
+    tmp = settled.copy()
+    if "ts" in tmp.columns:
+        tmp["ts"] = pd.to_datetime(tmp["ts"], errors="coerce", utc=True)
+        tmp["week"] = tmp["ts"].dt.to_period("W-MON").dt.start_time
+    else:
+        tmp["week"] = "n/a"
+    by_week_modelver = tmp.groupby(["week","model_version"]).agg(
+        bets=("stake","count"),
+        stake=("stake", _num),
+        profit=("payout", _num),
+    ).reset_index()
+    by_week_modelver["roi_%"] = by_week_modelver["profit"]/by_week_modelver["stake"]*100.0
+else:
+    by_modelver = pd.DataFrame()
+    by_week_modelver = pd.DataFrame()
+
+mem = io.BytesIO()
+with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+    z.writestr("by_market.csv", by_market.to_csv(index=False))
+    z.writestr("by_month.csv", by_month.to_csv(index=False))
+    z.writestr("by_modelver.csv", by_modelver.to_csv(index=False))
+    z.writestr("by_week_modelver.csv", by_week_modelver.to_csv(index=False))
+    z.writestr("bets_log_settled.csv", settled.to_csv(index=False))
+mem.seek(0)
+
+st.download_button("Download report bundle (zip)", data=mem.read(), file_name="reports_bundle.zip", mime="application/zip")
+st.caption("Tip: run this page headless via Streamlit script or schedule with Windows Task Scheduler for weekly exports.")
+
+
+
+
+
+

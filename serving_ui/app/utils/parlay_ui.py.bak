@@ -1,0 +1,82 @@
+from __future__ import annotations
+import pandas as pd
+import streamlit as st
+
+try:
+    from app.utils.parlay_cart import add_to_cart, read_cart
+except Exception:
+    def add_to_cart(df: pd.DataFrame) -> None:
+        st.warning("parlay_cart not available; selections won’t persist.")
+    def read_cart() -> pd.DataFrame:
+        return pd.DataFrame()
+
+def _safe_cols(df: pd.DataFrame) -> list[str]:
+    pref = ["game_id","home","away","market","side","line","odds","book","p_win","_ev_per_$1","ev","_date_iso","commence_time"]
+    return [c for c in pref if c in df.columns] + [c for c in df.columns if c not in pref]
+
+def selectable_odds_table(
+    cand: pd.DataFrame,
+    page_key: str,
+    page_name: str,
+    allow_same_game: bool = False,
+    one_per_market_per_game: bool = True,
+) -> None:
+    work = (cand.copy() if isinstance(cand, pd.DataFrame) else pd.DataFrame())
+    if work.empty:
+        st.info("No rows to add.")
+        return
+
+    work = work[_safe_cols(work)]
+    work.insert(0, "_select", False)
+
+    edited = st.data_editor(
+        work,
+        key=f"editor_{page_key}",
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    chosen = edited[edited["_select"] == True].drop(columns="_select", errors="ignore")
+
+    msgs = []
+    if not allow_same_game and "game_id" in chosen.columns and not chosen.empty:
+        dup_games = chosen["game_id"].value_counts()
+        bad = dup_games[dup_games > 1]
+        if not bad.empty:
+            msgs.append(f"• Same-game prevented for {len(bad)} game(s). Keeping first per game.")
+            chosen = chosen.sort_index().drop_duplicates(subset=["game_id"], keep="first")
+
+    if one_per_market_per_game:
+        keys = [c for c in ["game_id","market"] if c in chosen.columns]
+        if keys:
+            before = len(chosen)
+            chosen = chosen.sort_index().drop_duplicates(subset=keys, keep="first")
+            if len(chosen) < before:
+                msgs.append("• One-per-market-per-game enforced; duplicates removed.")
+
+    colA, colB = st.columns([1,3])
+    with colA:
+        if st.button("➕ Add selected to cart", key=f"add_{page_key}"):
+            if chosen.empty:
+                st.warning("Nothing selected.")
+            else:
+                try:
+                    add_to_cart(chosen)
+                    st.success(f"Added {len(chosen)} selection(s) to cart.")
+                except Exception as e:
+                    st.error(f"Could not add to cart: {e}")
+
+    with colB:
+        if msgs:
+            st.caption(" ".join(msgs))
+
+    try:
+        cart = read_cart()
+        if isinstance(cart, pd.DataFrame) and not cart.empty:
+            st.subheader("Current Parlay Cart")
+            st.dataframe(cart, use_container_width=True, hide_index=True)
+    except Exception:
+        pass
+
+__all__ = ["selectable_odds_table"]
+

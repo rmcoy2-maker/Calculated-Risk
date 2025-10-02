@@ -1,0 +1,53 @@
+from __future__ import annotations
+from pathlib import Path
+from glob import glob
+import pandas as pd
+import streamlit as st
+st.set_page_config(page_title='Ã°Å¸â€œâ€¹ Slate Viewer (Safe Mode)', layout='wide')
+st.title('Ã°Å¸â€œâ€¹ Slate Viewer (Safe Mode)')
+st.caption('This fallback page always renders. If the main page was blank, use this to verify paths and load a CSV.')
+HERE = Path(__file__).resolve()
+APP = HERE.parents[1]
+SU = HERE.parents[2]
+REPO = HERE.parents[3]
+DB_CANDIDATES = [REPO / 'db', SU / 'db', APP / 'db']
+db_dir = next((d for d in DB_CANDIDATES if d.exists()), REPO / 'db')
+st.subheader('Ã°Å¸â€œâ€š Detected locations')
+st.write('REPO:', REPO)
+st.write('DB candidates:', [str(x) for x in DB_CANDIDATES])
+st.write('Selected DB dir:', str(db_dir), '(exists:', db_dir.exists(), ')')
+csvs = []
+if db_dir.exists():
+    for p in db_dir.glob('*.csv'):
+        try:
+            csvs.append((p.name, p.stat().st_size, p))
+        except Exception:
+            pass
+csvs = sorted(csvs, key=lambda t: t[1], reverse=True)
+st.subheader('Ã°Å¸â€”â€š CSVs found in DB dir')
+if not csvs:
+    st.warning('No CSVs found in the detected DB fnewer. Put a file like market_lines.csv under it.')
+else:
+    for name, size, p in csvs[:50]:
+        st.write(f'- {name} ({size} bytes)')
+st.subheader('Ã°Å¸â€œâ€˜ Pick a CSV to preview')
+names = ['<Select>'] + [name for name, _, _ in csvs]
+pick = st.selectbox('CSV file', options=names, index=0, key='pickcsv')
+if pick != '<Select>':
+    path = [p for n, _, p in csvs if n == pick][0]
+    st.info(f'Loading: {path}')
+    try:
+        df = pd.read_csv(path)
+        st.dataframe(df.head(100), width='stretch')
+        st.download_button('Ã¢Â¬â€¡Ã¯Â¸Â\x8f Download this CSV', data=df.to_csv(index=False).encode('utf-8'), file_name=path.name, mime='text/csv')
+    except Exception as e:
+        st.error(f'Read error: {e}')
+with st.expander('Ã¢Å¡â„¢Ã¯Â¸Â\x8f Debug details'):
+    try:
+        import sys, platform
+        st.write('Python:', sys.version)
+        st.write('Platform:', platform.platform())
+        st.write('Streamlit:', __import__('streamlit').__version__)
+        st.write('Pandas:', __import__('pandas').__version__)
+    except Exception as e:
+        st.write('Version info error:', e)

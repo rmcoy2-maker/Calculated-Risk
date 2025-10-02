@@ -1,0 +1,31 @@
+from __future__ import annotations
+import pandas as pd
+EDGE_COLS_REQ = ['Season', 'Week', '_DateISO', '_home_team', '_away_team', 'market', 'side', 'odds', 'p_win']
+LIVE_COLS_REQ = ['game_id', 'market', 'side', 'odds', 'book', 'line']
+SCORE_COLS_REQ = ['Season', 'Week', 'home_team', 'away_team', 'home_score', 'away_score', 'home_win', 'away_win', 'game_id']
+BETLOG_COLS_REQ = ['timestamp', 'game_id', 'market', 'side', 'odds', 'stake', 'source', 'note']
+PARLAY_COLS_REQ = ['parlay_id', 'leg_idx', 'game_id', 'market', 'side', 'odds', 'stake', 'p_win', 'ev']
+
+def ensure_cols(df: pd.DataFrame, required: list[str], fill=None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame({c: [] for c in required})
+    out = df.copy()
+    for c in required:
+        if c not in out.columns:
+            out[c] = fill if fill is not None else 0 if c.endswith('_score') else ''
+    return out
+
+def coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors='coerce')
+    return out
+
+def add_missing_defaults_edges(df: pd.DataFrame) -> pd.DataFrame:
+    out = ensure_cols(df, EDGE_COLS_REQ)
+    for c in ['_pick_team', '_ev_per_$1', 'game_id', 'line', 'book']:
+        if c not in out.columns:
+            out[c] = ''
+    out = coerce_numeric(out, ['odds', 'p_win'])
+    return out

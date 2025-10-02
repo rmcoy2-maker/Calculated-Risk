@@ -1,0 +1,147 @@
+﻿# -*- coding: utf-8 -*-
+# app/pages/06_Bet_Log.py  (canon path = REPO\\exports)
+
+import sys, json, hashlib
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+# --- Canonical paths (repo root) ---
+REPO = Path(__file__).resolve().parents[2]      # ...\edge-finder
+EXPORTS = REPO / "exports"
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+LOG     = EXPORTS / "bets_log.csv"
+PARLAYS = EXPORTS / "parlays.csv"
+
+def ensure_log() -> Path:
+    if not LOG.exists():
+        pd.DataFrame(columns=[
+            "ts","market","ref","side","line","odds","p_win","ev",
+            "stake","status","result","pnl","tag","legs_json","bet_id"
+        ]).to_csv(LOG, index=False, encoding="utf-8")
+    return LOG
+
+def read_bet_log() -> pd.DataFrame:
+    return pd.read_csv(ensure_log(), encoding="utf-8-sig")
+
+def read_parlays() -> pd.DataFrame:
+    if not PARLAYS.exists():
+        return pd.DataFrame(columns=[
+            "ts","market","odds","p_win","ev","stake","status",
+            "result","pnl","tag","legs_json","parlay_id"
+        ])
+    return pd.read_csv(PARLAYS, encoding="utf-8-sig")
+
+# ---------- Load data ----------
+bets_df   = read_bet_log().assign(origin="manual")
+parlays_df= read_parlays().assign(origin="suggested")
+df = pd.concat([bets_df, parlays_df], ignore_index=True, sort=False)
+
+# ---------- UI ----------
+st.set_page_config(page_title="Bet Log", layout="wide")
+st.title("📒 Bet Log")
+st.caption(f"🔎 Using log: {LOG}")
+st.caption(f"Rows in log (manual): {len(bets_df)}  |  Rows in parlays: {len(parlays_df)}")
+
+# ---------- Helpers ----------
+def _norm(series):
+    return (
+        pd.Series(series, dtype="object")
+        .astype(str).str.lower().str.strip()
+        .replace({"": None})
+    )
+def _num(series):
+    return pd.to_numeric(series, errors="coerce")
+
+# status/result normalize
+if "status" in df.columns:  df["status"] = _norm(df["status"])
+if "result" in df.columns:  df["result"] = _norm(df["result"])
+
+# ensure expected columns
+expected = ["ts","market","ref","side","line","odds","p_win","ev",
+            "stake","status","result","pnl","tag","legs_json","bet_id","origin"]
+for c in expected:
+    if c not in df.columns:
+        df[c] = None
+
+# legs short label
+def legs_short_from_json(s):
+    try:
+        legs = json.loads(s) if isinstance(s,str) else (s or [])
+        if isinstance(legs, dict):
+            legs = legs.get("legs", [])
+        return " + ".join(f"{d.get('side','?')}@{d.get('odds','?')}" for d in legs) or "(no legs)"
+    except Exception:
+        return "(invalid legs)"
+df["legs_short"] = df["legs_json"].apply(legs_short_from_json)
+
+# stable bet_id if missing
+if "bet_id" not in df.columns or df["bet_id"].isna().all():
+    def _mk_id(row):
+        basis = f"{row.get('ts','')}|{row.get('market','')}|{row.get('ref','')}|{row.get('odds','')}|{row.get('tag','')}"
+        return hashlib.sha1(basis.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    df["bet_id"] = df.apply(_mk_id, axis=1)
+
+# -------- Filters (origin only shown; keep your others as-is) --------
+st.subheader("Filters")
+df_filt = df.copy()
+df_filt["ts"] = pd.to_datetime(df_filt.get("ts"), errors="coerce")
+with st.sidebar:
+    st.caption("Origin")
+    origin_choice = st.radio("Show bets from:", ["Both","Manual only","Suggested only"], index=0, key="bl_f_origin")
+if origin_choice == "Manual only":
+    df_filt = df_filt[df_filt["origin"] == "manual"]
+elif origin_choice == "Suggested only":
+    df_filt = df_filt[df_filt["origin"] == "suggested"]
+
+# -------- Performance --------
+st.subheader("Performance")
+df_perf = df_filt.copy()
+df_perf["ts"] = pd.to_datetime(df_perf.get("ts"), errors="coerce")
+closed_like = {"closed","settled","graded","void","canceled","cancelled"}
+result_like = {"win","loss","push","void"}
+df_perf = df_perf[df_perf["status"].isin(closed_like) | df_perf["result"].isin(result_like)].copy()
+
+stake = _num(df_perf.get("stake")).fillna(0.0)
+pnl   = _num(df_perf.get("pnl")).fillna(0.0)
+wins  = int((df_perf.get("result","").astype(str).str.lower()=="win").sum())
+loss  = int((df_perf.get("result","").astype(str).str.lower()=="loss").sum())
+push  = int((df_perf.get("result","").astype(str).str.lower()=="push").sum())
+decisive = max(wins + loss, 1)
+
+c1,c2,c3,c4,c5,c6 = st.columns(6)
+c1.metric("Bets (closed)", f"{len(df_perf):,}")
+c2.metric("Record", f"{wins}-{loss}-{push}")
+c3.metric("Win %", f"{(wins/decisive)*100:.1f}%")
+c4.metric("Total staked", f"${stake.sum():,.2f}")
+c5.metric("P&L", f"${pnl.sum():,.2f}")
+c6.metric("ROI", f"{(pnl.sum()/stake.sum()*100 if stake.sum()>0 else 0):.1f}%")
+
+# -------- Tables --------
+st.subheader("Open / Pending")
+open_like = {"open","beta-open","pending","beta-pending","paper","beta-paper"}
+open_df = df_filt[df_filt["status"].isin(open_like) | df_filt["status"].isna()]
+st.dataframe(open_df[["bet_id","market","ref","legs_short","odds","stake","status","tag"]],
+             use_container_width=True, hide_index=True)
+
+st.subheader("Closed / Settled")
+closed_df = df_filt[df_filt["status"].isin(closed_like) | df_filt["result"].isin(result_like)]
+st.dataframe(closed_df[["bet_id","ts","market","ref","legs_short","odds","stake","status","result","pnl","tag"]],
+             use_container_width=True, hide_index=True)
+
+st.subheader("All Entries")
+st.dataframe(df_filt[["bet_id","ts","market","ref","legs_short","odds","p_win","ev","stake","status","result","pnl","tag"]],
+             use_container_width=True, hide_index=True)
+
+# -------- Export filtered --------
+csv_bytes = df_filt.to_csv(index=False, encoding="utf-8").encode("utf-8")
+st.download_button("⬇️ Download filtered bets.csv", data=csv_bytes, file_name="filtered_bets.csv", mime="text/csv")
+
+# -------- Normalize & Save whole log --------
+if st.button("🧹 Normalize & Save bets_log.csv"):
+    df.to_csv(LOG, index=False, encoding="utf-8")
+    st.success(f"Normalized and saved → {LOG}")
+    if hasattr(st, "rerun"): st.rerun()
+    else: st.experimental_rerun()

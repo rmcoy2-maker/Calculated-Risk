@@ -1,0 +1,172 @@
+
+from __future__ import annotations
+import json
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="Error Dashboard", page_icon="🚨", layout="wide")
+from app.lib.compliance_gate import require_eligibility  # compliance gate
+require_eligibility(min_age=18, restricted_states={"WA","ID","NV"})
+
+
+
+
+# === Nudge+Session (auto-injected) ===
+try:
+    from app.utils.nudge import begin_session, touch_session, session_duration_str, bump_usage, show_nudge  # type: ignore
+except Exception:
+    def begin_session(): pass
+    def touch_session(): pass
+    def session_duration_str(): return ""
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Initialize/refresh session and show live duration
+begin_session()
+touch_session()
+if hasattr(st, "sidebar"):
+    st.sidebar.caption(f"🕒 Session: {session_duration_str()}")
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Optional upsell banner after threshold interactions in last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge+Session (auto-injected) ===
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+st.title("🚨 Error & Warning Dashboard")
+
+# Where the structured log lives (created by utils.error_log)
+def _exports_dir() -> Path:
+    here = Path(__file__).resolve()
+    for up in [here.parent] + list(here.parents):
+        if up.name.lower() == "edge-finder":
+            p = up / "exports"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    p = here.parent / "exports"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+LOG = _exports_dir() / "events.ndjson"
+LEGACY_ERRORS = _exports_dir() / "errors.log"
+
+c1, c2, c3 = st.columns([2,1,1])
+c1.write(f"Log file: {LOG}")
+auto = c2.toggle("Auto-refresh", value=True, help="Refresh every ~5s")
+if c3.button("Manual refresh"):
+    st.rerun()
+
+
+if auto:
+    # Bust caches by appending mtime to the URL (no-op if unchanged)
+    st.experimental_set_query_params(_=str(Path(LOG).stat().st_mtime if LOG.exists() else 0))
+    # Prefer streamlit-extras autorefresh if available; else fallback to HTML meta refresh
+    try:
+        from streamlit_extras.st_autorefresh import st_autorefresh
+        st_autorefresh(interval=5000, key="errdash_autorefresh")
+    except Exception:
+        st.markdown("<meta http-equiv='refresh' content='5'>", unsafe_allow_html=True)
+
+def _load_ndjson(p: Path) -> pd.DataFrame:
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame(columns=["ts","level","page","msg","exception","traceback","filename","lineno","category"])
+    recs = []
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                recs.append(json.loads(line))
+            except Exception:
+                pass
+    if not recs:
+        return pd.DataFrame(columns=["ts","level","page","msg"])
+    df = pd.DataFrame(recs)
+    # typed columns
+    for c in ("ts","level","page","msg","exception","traceback","filename","category"):
+        if c in df.columns:
+            df[c] = df[c].astype("string")
+    if "lineno" in df.columns:
+        df["lineno"] = pd.to_numeric(df["lineno"], errors="coerce").astype("Int64")
+    return df
+
+df = _load_ndjson(LOG)
+
+if df.empty:
+    st.success("✅ No events logged yet. (Enable logging on pages; see instructions below.)")
+else:
+    # Filters
+    cols = st.columns([1,1,1,2])
+    lvl = cols[0].multiselect("Level", sorted(df["level"].dropna().unique().tolist()), default=["ERROR","WARNING","INFO"])
+    pages = cols[1].multiselect("Page", sorted(df["page"].dropna().unique().tolist()), default=[])
+    q = cols[2].text_input("Search text")
+    last_n = cols[3].number_input("Show last N rows", min_value=50, max_value=50000, value=2000, step=50)
+
+    view = df.copy()
+    if lvl:
+        view = view[view["level"].isin(lvl)]
+    if pages:
+        view = view[view["page"].isin(pages)]
+    if q:
+        rx = q.lower()
+        def _hit(s):
+            return any(rx in str(view.get(c, "")).lower() for c in ("msg","exception","traceback"))
+        mask = (
+            view["msg"].fillna("").str.lower().str.contains(rx, regex=False) |
+            view.get("exception", pd.Series("", index=view.index)).fillna("").str.lower().str.contains(rx, regex=False) |
+            view.get("traceback", pd.Series("", index=view.index)).fillna("").str.lower().str.contains(rx, regex=False)
+        )
+        view = view[mask]
+    if last_n and len(view) > last_n:
+        view = view.tail(int(last_n))
+
+    # Sort by ts if present
+    if "ts" in view.columns:
+        view = view.sort_values("ts")
+
+    # Compact and full views
+    with st.expander("Compact table", expanded=True):
+        cols_show = [c for c in ["ts","level","page","msg","filename","lineno","category"] if c in view.columns]
+        st.dataframe(view[cols_show], use_container_width=True, height=420)
+    with st.expander("Event detail"):
+        st.dataframe(view, use_container_width=True, height=600)
+
+    st.download_button("⬇️ Download events.ndjson", data="\n".join(view.apply(lambda r: r.to_json(), axis=1).tolist()).encode("utf-8"),
+                       file_name="events_filtered.ndjson", mime="application/x-ndjson")
+
+st.divider()
+st.markdown("""
+### How to capture **warnings** and **page-level issues**
+
+Add this at the **top of each page** (after imports):
+
+```python
+from app.utils.error_log import setup_page_logging
+setup_page_logging("07_Parlay_Scored_Explorer")  # ← use the page's short name
+```
+
+What it does:
+- Mirrors `st.warning()`, `st.error()`, and `warnings.warn()` into a structured log `exports/events.ndjson`
+- Captures uncaught exceptions and puts the traceback in the log
+- Keeps the original Streamlit behavior (red/amber boxes still show on the page)
+""")
+
+
+

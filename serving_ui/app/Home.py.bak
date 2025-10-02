@@ -1,0 +1,89 @@
+﻿# ---- PATH SHIM (auto-added) ----
+import sys, pathlib
+_APP_DIR = pathlib.Path(__file__).resolve().parents[1]
+_PARENT  = _APP_DIR.parent
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
+# ---- END PATH SHIM ----
+# Home.py â€” resilient, logo'd hub (entrypoint)
+from __future__ import annotations
+import re
+from pathlib import Path
+import streamlit as st
+
+HERE = Path(__file__).resolve()
+APP_DIR = HERE.parent
+PAGES_DIR = APP_DIR / "pages"
+
+# ---- find a logo (try common spots) ----
+CANDIDATE_LOGOS = [
+    APP_DIR / "assets" / "logo.png",
+    APP_DIR / "assets" / "calculated_risk_logo.png",
+    HERE.parent / "assets" / "logo.png",
+    HERE.parent / "assets" / "calculated_risk_logo.png",
+]
+LOGO = next((p for p in CANDIDATE_LOGOS if p.exists()), None)
+
+st.set_page_config(
+    page_title="Calculated Risk â€¢ Hub",
+    page_icon=str(LOGO) if LOGO else "ðŸˆ",
+    layout="wide",
+)
+
+# ---- hero ----
+col1, col2 = st.columns([1, 3])
+with col1:
+    if LOGO:
+        st.image(str(LOGO), width=200)
+with col2:
+    st.title("Calculated Risk")
+    st.markdown("**Edge Finder â€¢ Betting Analytics â€¢ Parlay Builder**")
+
+st.divider()
+
+# ---- sanity: pages dir ----
+if not PAGES_DIR.exists():
+    st.error(f"Missing pages dir: {PAGES_DIR}")
+    st.stop()
+
+# ---- helper ----
+def nice(label: str) -> str:
+    base = re.sub(r"^\d+[_-]*", "", label)
+    return base.replace("_", " ").replace("-", " ").strip()
+
+# ---- pin a few important pages if present ----
+PINNED = [
+    ("09_Parlay_Builder.py", "ðŸŽ² Parlay Builder"),
+    ("06_Bet_Log.py",        "ðŸ“ Bet Log"),
+    ("03_Backtest.py",       "ðŸ§ª Backtest"),
+    ("98_Diagnostics.py",    "ðŸ› ï¸ Diagnostics"),
+]
+pcols = st.columns(len(PINNED))
+linked = set()
+for i, (fname, label) in enumerate(PINNED):
+    fpath = PAGES_DIR / fname
+    if fpath.exists():
+        pcols[i].page_link(f"pages/{fname}", label=label)
+        linked.add(fname)
+    else:
+        pcols[i].caption(f"â›” missing: pages/{fname}")
+
+st.divider()
+
+# ---- auto-list the rest (avoids 404s) ----
+files = sorted(
+    [p for p in PAGES_DIR.glob("*.py") if p.is_file() and not p.name.startswith("__")],
+    key=lambda p: p.name.lower()
+)
+for f in files:
+    if f.name in linked:
+        continue
+    st.page_link(f"pages/{f.name}", label=nice(f.stem))
+
+# ---- diagnostics ----
+with st.expander("âš™ï¸ Diagnostics"):
+    st.write("APP_DIR:", APP_DIR)
+    st.write("PAGES_DIR:", PAGES_DIR)
+    st.write("Found page files:", [p.name for p in files])
+    st.write("Logo:", str(LOGO) if LOGO else "None found")
+

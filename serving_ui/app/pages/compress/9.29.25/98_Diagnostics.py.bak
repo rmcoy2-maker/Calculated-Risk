@@ -1,0 +1,173 @@
+from __future__ import annotations
+import sys
+from pathlib import Path
+import streamlit as st
+_here = Path(__file__).resolve()
+for up in [_here] + list(_here.parents):
+    cand = up / "serving_ui" / "app" / "__init__.py"
+    if cand.exists():
+        base = str((up / "serving_ui").resolve())
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        break
+from app.lib.auth import login, show_logout
+PAGE_PROTECTED = False
+auth = login(required=PAGE_PROTECTED)
+if not auth.ok:
+    st.stop()
+show_logout()
+# === /BootAuth block ===
+
+import streamlit as st
+from app.lib.auth import login, show_logout
+# === Auth (auto-injected) ===
+import streamlit as st  # ensured
+from app.lib.auth import login, show_logout
+
+auth = login(required=False)   # or required=True for protected pages
+if not auth.authenticated:
+    st.info("You are in read-only mode.")
+show_logout()  # sidebar logout
+# === /Auth (auto-injected) ===
+
+import streamlit as st
+# --- import bootstrap so 'app' package is importable when run from anywhere ---
+import sys
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+# file: .../serving_ui/app/pages/<page>.py  -> parents[2] = .../serving_ui
+_SERVING_UI = _HERE.parents[2]
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+# -----------------------------------------------------------------------------import streamlit as st
+st.set_page_config(page_title='98 Diagnostics', page_icon='📈', layout='wide')
+
+import streamlit as st
+
+import streamlit as st
+
+
+import streamlit as st
+
+# --- diagnostics import (robust) ---
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        # add repo/serving_ui to sys.path so 'app' is importable
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            # fallback if pages run with CWD=app
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+            def mount_in_sidebar(page_name: str):
+                return None
+# --- /diagnostics import (robust) ---
+# app/pages/98_Diagnostics.py
+
+import json
+from collections import defaultdict, deque
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+st.title("🩺 Edge Finder — Unified Diagnostics")
+
+# Paths
+REPO_ROOT = Path(__file__).resolve().parents[2]
+EXPORTS = REPO_ROOT / "exports"
+LOG_DIR = EXPORTS / "diag_logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# ----------- Load JSONL logs -----------
+def load_logs() -> pd.DataFrame:
+    rows = []
+    for p in sorted(LOG_DIR.glob("diag-*.jsonl"))[-7:]:  # last 7 day-files
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        j = json.loads(line)
+                        rows.append(j)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ts","page","kind","level","msg"])
+
+logs = load_logs()
+st.caption(f"Loaded {len(logs):,} log events from {LOG_DIR}")
+
+# ----------- Status by page -----------
+st.subheader("Page Status")
+if logs.empty:
+    st.info("No diagnostics events recorded yet. Visit any data-handling page to generate logs.")
+else:
+    # Normalize ts to datetime + latest event per page
+    def _parse_ts(x):
+        try:
+            return datetime.fromisoformat(str(x))
+        except Exception:
+            return None
+    logs["_dt"] = logs["ts"].map(_parse_ts)
+
+    # summary: last event, counts of warnings/errors
+    g = logs.groupby("page", dropna=True)
+    summary = pd.DataFrame({
+        "last_event_ts": g["_dt"].max(),
+        "events": g["page"].count(),
+        "warnings": g.apply(lambda df: int((df["level"] == "warning").sum())),
+        "errors": g.apply(lambda df: int((df["level"] == "error").sum())),
+    }).reset_index().sort_values(["errors","warnings","last_event_ts"], ascending=[False, False, False])
+
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    # recent events viewer
+    st.subheader("Recent Events")
+    pages = ["(all)"] + sorted(summary["page"].tolist())
+    pick = st.selectbox("Filter by page", pages, index=0)
+    view = logs if pick == "(all)" else logs[logs["page"] == pick]
+    view = view.sort_values("_dt", ascending=False).head(500)[["ts","page","level","kind","msg"]]
+    st.dataframe(view, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# ----------- Exports health (quick check) -----------
+st.subheader("Exports Health")
+files = {
+    "bets_log.csv": EXPORTS / "bets_log.csv",
+    "parlays.csv":  EXPORTS / "parlays.csv",
+    "edges.csv":    EXPORTS / "edges.csv",
+    "scores_1966-2025.csv": EXPORTS / "scores_1966-2025.csv",
+    "settled.csv":  EXPORTS / "settled.csv",
+}
+rows = []
+for label, p in files.items():
+    exists = p.exists()
+    size = p.stat().st_size if exists else 0
+    row = {"file": label, "exists": exists, "size": size}
+    if exists and size > 0:
+        try:
+            df = pd.read_csv(p, nrows=5)
+            row["preview_rows"] = len(df)
+            row["preview_cols"] = len(df.columns)
+        except Exception as e:
+            row["read_error"] = str(e)
+    rows.append(row)
+st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+
+
+
+
+
+
+
+

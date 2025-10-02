@@ -1,0 +1,156 @@
+from __future__ import annotations
+import json, time, traceback, os
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable, Optional, Any, Dict
+import pandas as pd
+import streamlit as st
+
+@dataclass
+class _DiagState:
+    page: str = "unknown"
+    started_at: float = field(default_factory=time.time)
+    entries: list[dict] = field(default_factory=list)
+    log_file: Path | None = None
+    errors: int = 0
+    warnings: int = 0
+
+class Diagnostics:
+    def __init__(self, repo_root: Optional[Path] = None):
+        here = Path(__file__).resolve()
+        self.repo_root = repo_root or here.parents[3]
+        self.exports = (self.repo_root / "exports")
+        self.exports.mkdir(parents=True, exist_ok=True)
+        self.log_dir = self.exports / "diag_logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.state = _DiagState()
+
+    def start_page(self, page_name: str):
+        self.state = _DiagState(page=page_name)
+        stamp = datetime.now().strftime("%Y%m%d")
+        self.state.log_file = self.log_dir / f"diag-{stamp}.jsonl"
+        self._emit("page_start", f"Page start: {page_name}", "info", {
+            "cwd": os.getcwd(),
+            "python": os.sys.version.split()[0],
+            "exports": str(self.exports),
+        })
+
+    def _emit(self, kind: str, msg: str, level: str = "info", extra: Dict[str, Any] | None = None):
+        rec = {"ts": datetime.now().isoformat(timespec="seconds"),
+               "page": self.state.page, "kind": kind, "level": level, "msg": msg}
+        if extra: rec.update(extra)
+        try:
+            with self.state.log_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        self.state.errors   += int(level == "error")
+        self.state.warnings += int(level == "warning")
+
+    def section(self, name: str):
+        class _Sec:
+            def __init__(_s, outer, nm): _s.o, _s.nm, _s.t0 = outer, nm, None
+            def __enter__(_s): _s.t0 = time.time(); _s.o._emit("section_start", _s.nm); return _s
+            def __exit__(_s, et, ev, tb):
+                dur = round(time.time() - _s.t0, 3)
+                if ev: _s.o._emit("section_end", f"{_s.nm} failed", "error",
+                                  {"duration_s": dur, "exc": repr(ev), "trace": "".join(traceback.format_exception(et, ev, tb))[-2000:]})
+                else:  _s.o._emit("section_end", f"{_s.nm} ok", "info", {"duration_s": dur})
+                return False
+        return _Sec(self, name)
+
+    def capture_errors(self, label: str):
+        def _wrap(fn):
+            def _inner(*a, **kw):
+                t0 = time.time()
+                try: return fn(*a, **kw)
+                except Exception as e:
+                    self._emit("error", f"{label} error", "error",
+                               {"exc": repr(e), "trace": traceback.format_exc()[-2000:], "duration_s": round(time.time()-t0,3)})
+                    raise
+            return _inner
+        return _wrap
+
+    def check_file(self, path: Path | str, required: bool = True, label: Optional[str] = None):
+        p = Path(path)
+        exists = p.exists()
+        size = p.stat().st_size if exists else 0
+        lvl = "info"
+        if required and (not exists or size == 0): lvl = "error"
+        elif exists and size == 0:                 lvl = "warning"
+        self._emit("file", label or p.name, lvl, {"path": str(p), "exists": exists, "size": size})
+        return exists and size > 0
+
+    def log_df(self, df: pd.DataFrame, name: str, required_cols: Iterable[str] = ()):
+        missing = [c for c in required_cols if c not in df.columns]
+        lvl = "warning" if missing else "info"
+        info = {"name": name, "rows": int(len(df)), "cols": int(df.shape[1])}
+        if missing: info["missing_cols"] = missing
+        self._emit("dataframe", f"{name} {info['rows']}x{info['cols']}", lvl, info)
+
+    def sidebar_panel(self):
+        with st.sidebar:
+            st.markdown("### 🩺 Page Diagnostics")
+            st.caption(f"**{self.state.page}** · warnings: {self.state.warnings} · errors: {self.state.errors}")
+            st.divider()
+
+diag_singleton = Diagnostics()
+
+    def check_expected(self, path: Path | str, *, label: str, allow_globs: list[str],
+                       must_exist: bool = True, max_age_minutes: int | None = None):
+        """
+        Validate that 'path' matches one of allow_globs, exists, non-empty, and (optionally) fresh.
+        Emits warn/error/info accordingly; returns a dict with checks.
+        """
+        from fnmatch import fnmatch
+        p = Path(path) if path else None
+        info = {"label": label, "path": str(p) if p else None, "ok": True,
+                "matched": False, "exists": False, "size": 0, "fresh_ok": None}
+
+        # pattern match (by filename)
+        if p:
+            fname = p.name
+            for pat in allow_globs:
+                if fnmatch(fname, pat):
+                    info["matched"] = True
+                    break
+
+        if not info["matched"]:
+            self._emit("expect", f"{label}: unexpected filename", "warning",
+                       {"path": info["path"], "allow_globs": allow_globs})
+            info["ok"] = False
+
+        # existence / size
+        if p and p.exists():
+            info["exists"] = True
+            info["size"] = p.stat().st_size
+            if info["size"] == 0:
+                self._emit("expect", f"{label}: file is empty", "warning", info)
+                info["ok"] = False
+        else:
+            if must_exist:
+                self._emit("expect", f"{label}: file missing", "error", {"path": info["path"]})
+                info["ok"] = False
+            else:
+                self._emit("expect", f"{label}: file not present (optional)", "info", {"path": info["path"]})
+
+        # freshness
+        if max_age_minutes is not None and info["exists"] and info["size"] > 0:
+            import time
+            age_s = time.time() - p.stat().st_mtime
+            age_min = age_s / 60.0
+            info["fresh_ok"] = age_min <= max_age_minutes
+            info["age_minutes"] = round(age_min, 1)
+            if not info["fresh_ok"]:
+                self._emit("expect", f"{label}: stale ({age_min:.1f} min old)", "warning", info)
+                info["ok"] = False
+            else:
+                self._emit("expect", f"{label}: fresh ({age_min:.1f} min)", "info", info)
+
+        return info
+def mount_in_sidebar(page_name: str):
+    diag_singleton.start_page(page_name)
+    diag_singleton.sidebar_panel()
+    return diag_singleton
+

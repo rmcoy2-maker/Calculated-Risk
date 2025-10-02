@@ -1,0 +1,31 @@
+﻿# app/pages/00_Hub.py
+from pathlib import Path
+import streamlit as st
+
+st.set_page_config(page_title="Hub", layout="wide")
+st.title("🏠 Hub · Calculated Risk")
+
+root = Path(__file__).resolve().parents[1]  # -> app/
+pages_dir = root / "pages"
+
+st.caption("Jump to any tool page below. (Links update automatically based on files in /pages.)")
+
+# Collect page files (skip this file)
+files = sorted([p for p in pages_dir.glob("*.py") if p.name != "00_Hub.py"], key=lambda p: p.name.lower())
+
+# Split into two columns
+left, right = st.columns(2)
+cols = [left, right]
+
+def pretty(name: str) -> str:
+    # turn '01_Bet_Log.py' -> '01 Bet Log'
+    return name.replace("_", " ").replace(".py","")
+
+for i, p in enumerate(files):
+    rel = f"pages/{p.name}"  # IMPORTANT: path must be relative to entrypoint (app/)
+    label = pretty(p.name)
+    cols[i % 2].page_link(rel, label=label)
+
+st.divider()
+st.caption("Tip: keep unique numeric prefixes (00–09). Use `pages/<file>.py` in st.page_link().")
+

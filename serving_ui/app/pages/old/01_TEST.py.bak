@@ -1,0 +1,19 @@
+﻿# --- auto-added: newest-first patch ---
+from __future__ import annotations
+try:
+    # Preferred absolute import (when 'app' is a proper package)
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        # Fallback if pages are executed such that relative path works
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+        # Final no-op guard
+        def __nfp_apply(_): 
+            return
+import streamlit as st  # ensure alias available
+__nfp_apply(st)
+# --- end auto-added ---
+from app.bootstrap import bootstrap_paths
+bootstrap_paths()
+

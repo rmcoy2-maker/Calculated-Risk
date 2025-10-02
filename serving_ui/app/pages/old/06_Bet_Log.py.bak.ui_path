@@ -1,0 +1,327 @@
+﻿from app.bootstrap import bootstrap_paths; bootstrap_paths()
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]   # .../serving_ui/app
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+# === end boot ===# -*- coding: utf-8 -*-
+# app/pages/06_Bet Log.py
+
+import sys, json, hashlib
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+# ---- Path bootstrap ----
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# ---- Matplotlib (charts) ----
+try:
+    import matplotlib.pyplot as plt
+    HAS_MPL = True
+except Exception:
+    HAS_MPL = False
+
+# ---- deps / fallbacks ----
+try:
+    from app.lib.bet_log import ensure_bet_log, read_bet_log, legs_short_from_json
+except Exception:
+    def ensure_bet_log() -> Path:
+        p = _REPO_ROOT / "exports" / "bets_log.csv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.exists():
+            pd.DataFrame(columns=[
+                "ts","market","ref","side","line","odds","p_win","ev",
+                "stake","status","result","pnl","tag","legs_json","bet_id"
+            ]).to_csv(p, index=False, encoding="utf-8")
+        return p
+
+    def read_bet_log() -> pd.DataFrame:
+        return pd.read_csv(ensure_bet_log(), encoding="utf-8-sig")
+
+    def legs_short_from_json(s):
+        try:
+            legs = json.loads(s) if isinstance(s, str) else (s or [])
+            if isinstance(legs, dict):
+                legs = legs.get("legs", [])
+            return " + ".join(
+                f"{str(d.get('side','?'))}@{str(d.get('odds','?'))}" for d in legs
+            ) or "(no legs)"
+        except Exception:
+            return "(invalid legs)"
+
+# ---- Load both logs ----
+log_path = ensure_bet_log()
+bets_df = read_bet_log().assign(origin="manual")
+
+PARLAYS = _REPO_ROOT / "exports" / "parlays.csv"
+def read_parlays() -> pd.DataFrame:
+    if not PARLAYS.exists():
+        return pd.DataFrame(columns=[
+            "ts","market","odds","p_win","ev","stake","status",
+            "result","pnl","tag","legs_json","parlay_id"
+        ])
+    return pd.read_csv(PARLAYS, encoding="utf-8-sig")
+
+parlays_df = read_parlays().assign(origin="suggested")
+
+# ---- Combine ----
+df = pd.concat([bets_df, parlays_df], ignore_index=True, sort=False)
+
+# ---- Page chrome ----
+st.set_page_config(page_title="Bet Log", layout="wide")
+st.title("📒 Bet Log") 
+st.caption(f"🔎 Using log: {log_path}") 
+st.caption(f"Rows in log (manual): {len(bets_df)}  |  Rows in parlays: {len(parlays_df)}")
+
+# ---- helpers ----
+def _norm(series):
+    return (
+        pd.Series(series, dtype="object")
+        .astype(str).str.lower().str.strip()
+        .replace({"": None})
+    )
+
+def _num(series):
+    return pd.to_numeric(series, errors="coerce")
+
+# ---- normalize status/result ----
+df["status"] = _norm(df["status"]) if "status" in df.columns else None
+df["result"] = _norm(df["result"]) if "result" in df.columns else None
+
+# ---- ensure expected columns ----
+expected = [
+    "ts","market","ref","side","line","odds","p_win","ev",
+    "stake","status","result","pnl","tag","legs_json","bet_id","origin"
+]
+for c in expected:
+    if c not in df.columns:
+        df[c] = None
+
+# Derived short label
+df["legs_short"] = df["legs_json"].apply(legs_short_from_json)
+
+# Stable bet_id if absent
+if "bet_id" not in df.columns or df["bet_id"].isna().all():
+    def _mk_id(row):
+        basis = f"{row.get('ts','')}|{row.get('market','')}|{row.get('ref','')}|{row.get('odds','')}|{row.get('tag','')}"
+        return hashlib.sha1(basis.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    df["bet_id"] = df.apply(_mk_id, axis=1)
+
+# ---- Filters ----
+st.subheader("Filters")
+df_filt = df.copy()
+df_filt["ts"] = pd.to_datetime(df_filt.get("ts"), errors="coerce")
+with st.sidebar:
+    st.caption("Origin")
+    origin_choice = st.radio(
+        "Show bets from:",
+        ["Both", "Manual only", "Suggested only"],
+        index=0,
+        key="bl_f_origin",
+    )
+
+# Apply origin filter
+if origin_choice == "Manual only":
+    df_filt = df_filt[df_filt["origin"] == "manual"]
+elif origin_choice == "Suggested only":
+    df_filt = df_filt[df_filt["origin"] == "suggested"]
+
+# (keep your existing filter widgets …)
+
+# ---- Performance ----
+st.subheader("Performance")
+df_perf = df_filt.copy()
+df_perf["ts"] = pd.to_datetime(df_perf.get("ts"), errors="coerce")
+closed_like = {"closed","settled","graded","void","canceled","cancelled"}
+result_like = {"win","loss","push","void"}
+df_perf = df_perf[df_perf["status"].isin(closed_like) | df_perf["result"].isin(result_like)].copy()
+
+stake = _num(df_perf.get("stake")).fillna(0.0)
+pnl   = _num(df_perf.get("pnl")).fillna(0.0)
+odds  = _num(df_perf.get("odds"))
+
+res = df_perf.get("result", pd.Series(index=df_perf.index, dtype=object)).astype(str).str.lower()
+wins  = int((res == "win").sum()); loss  = int((res == "loss").sum())
+push  = int((res == "push").sum()); voids = int((res == "void").sum())
+decisive = max(wins + loss, 1)
+
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1.metric("Bets (closed)", f"{len(df_perf):,}")
+c2.metric("Record", f"{wins}-{loss}-{push}" + (f" ({voids} void)" if voids else ""))
+c3.metric("Win %", f"{(wins/decisive)*100:.1f}%")
+c4.metric("Total staked", f"${stake.sum():,.2f}")
+c5.metric("P&L", f"${pnl.sum():,.2f}")
+c6.metric("ROI", f"{(pnl.sum()/stake.sum()*100 if stake.sum()>0 else 0):.1f}%")
+
+# ---- Manual vs Suggested ----
+st.subheader("Manual vs Suggested")
+by_origin = df_perf.groupby("origin", dropna=False).agg(
+    Bets=("ref","count"),
+    Staked=("stake","sum"),
+    PnL=("pnl","sum"),
+)
+with np.errstate(divide="ignore", invalid="ignore"):
+    by_origin["ROI%"] = (by_origin["PnL"] / by_origin["Staked"].replace(0, np.nan)) * 100
+st.dataframe(by_origin.fillna(0).round(2), use_container_width=True)
+
+# ---- Charts, Tables, etc. ----
+# (keep your existing charts and tables below this point)
+
+
+# ---- Charts (matplotlib) ----
+with st.expander("Charts & breakdowns", expanded=False):
+    if not HAS_MPL:
+        st.info("Charts are disabled because matplotlib isn't installed. Install with: pip install matplotlib")
+    else:
+        # 1) Odds histogram (closed preferred; fallback to filtered)
+        d = df_perf if not df_perf.empty else df_filt
+        if "odds" in d.columns and not d.empty:
+            _odds = _num(d["odds"]).dropna()
+            if not _odds.empty:
+                fig = plt.figure()
+                plt.hist(_odds, bins=20)
+                plt.xlabel("Odds"); plt.ylabel("Count"); plt.title("Odds histogram")
+                st.pyplot(fig)
+
+        # 2) Stake histogram (filtered)
+        if "stake" in df_filt.columns and not df_filt.empty:
+            _stake = _num(df_filt["stake"]).dropna()
+            if not _stake.empty:
+                fig = plt.figure()
+                plt.hist(_stake, bins=20)
+                plt.xlabel("Stake"); plt.ylabel("Count"); plt.title("Stake size distribution")
+                st.pyplot(fig)
+
+        # 3) EV buckets win% (closed only)
+        if {"ev","result"}.issubset(df_perf.columns) and not df_perf.empty:
+            ev = _num(df_perf["ev"])
+            rr = df_perf["result"].astype(str).str.lower()
+            non_nan = ev.notna()
+            if non_nan.sum() >= 5:
+                try:
+                    q = pd.qcut(ev[non_nan], q=min(5, non_nan.sum()), duplicates="drop")
+                    win = (rr[non_nan] == "win").astype(int)
+                    loss = (rr[non_nan] == "loss").astype(int)
+                    denom = (win + loss).replace(0, np.nan)
+                    wr = (win.groupby(q).sum() / denom.groupby(q).sum()) * 100
+                    fig = plt.figure()
+                    wr.plot(kind="bar")
+                    plt.ylabel("Win %"); plt.title("Win% by EV bucket (closed, pushes ignored)")
+                    st.pyplot(fig)
+                except Exception:
+                    st.info("Not enough EV variety for bucketed Win%.")
+
+       # 4) Weekly ROI% (closed only)
+if df_perf["ts"].notna().any():
+    temp = df_perf.copy()
+    temp["stake_num"] = _num(temp.get("stake")).fillna(0)
+    temp["pnl_num"]   = _num(temp.get("pnl")).fillna(0)
+    weekly = (
+        temp.set_index("ts")
+            .resample("W")
+            .agg(staked=("stake_num","sum"), pnl=("pnl_num","sum"))
+    )
+    if not weekly.empty:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            weekly["ROI%"] = (weekly["pnl"] / weekly["staked"].replace(0, np.nan)) * 100
+        if not weekly["ROI%"].dropna().empty:
+            fig = plt.figure()
+            weekly["ROI%"].plot()
+            plt.ylabel("ROI %")
+            plt.title("Weekly ROI% (closed only)")
+            st.pyplot(fig)
+
+
+        # 5) Weekly ROI% split by origin (manual vs suggested)
+if df_perf["ts"].notna().any() and "origin" in df_perf.columns:
+    temp = df_perf.copy()
+    temp["stake_num"] = _num(temp.get("stake")).fillna(0)
+    temp["pnl_num"]   = _num(temp.get("pnl")).fillna(0)
+    weekly = (
+        temp.set_index("ts")
+            .groupby("origin")
+            .resample("W")
+            .agg(staked=("stake_num","sum"), pnl=("pnl_num","sum"))
+            .reset_index()
+    )
+    if not weekly.empty:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            weekly["ROI%"] = (weekly["pnl"] / weekly["staked"].replace(0, np.nan)) * 100
+        if not weekly["ROI%"].dropna().empty:
+            fig, ax = plt.subplots()
+            for origin, group in weekly.groupby("origin"):
+                ax.plot(group["ts"], group["ROI%"], marker="o", label=origin)
+            ax.set_ylabel("ROI %")
+            ax.set_title("Weekly ROI% by Origin")
+            ax.legend()
+            st.pyplot(fig)
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                weekly["ROI%"] = (weekly["pnl"] / weekly["staked"].replace(0, np.nan)) * 100
+            if not weekly["ROI%"].dropna().empty:
+                fig, ax = plt.subplots()
+                for origin, group in weekly.groupby("origin"):
+                    ax.plot(group["ts"], group["ROI%"], marker="o", label=origin)
+                ax.set_ylabel("ROI %")
+                ax.set_title("Weekly ROI% by Origin")
+                ax.legend()
+                st.pyplot(fig)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weekly["ROI%"] = (weekly["pnl"] / weekly["staked"].replace(0, np.nan)) * 100
+    if not weekly["ROI%"].dropna().empty:
+        fig, ax = plt.subplots()
+        for origin, group in weekly.groupby("origin"):
+            ax.plot(group["ts"], group["ROI%"], marker="o", label=origin)
+        ax.set_ylabel("ROI %")
+        ax.set_title("Weekly ROI% by Origin")
+        ax.legend()
+        st.pyplot(fig)
+
+# ---- Tables ----
+st.subheader("Open / Pending")
+open_like = {"open","beta-open","pending","beta-pending","paper","beta-paper"}
+open_df = df_filt[df_filt["status"].isin(open_like) | df_filt["status"].isna()]
+st.dataframe(
+    open_df[["bet_id","market","ref","legs_short","odds","stake","status","tag"]],
+    use_container_width=True, hide_index=True
+)
+
+st.subheader("Closed / Settled")
+closed_like = {"closed","settled","graded","void","canceled","cancelled"}
+result_like = {"win","loss","push","void"}
+closed_df = df_filt[df_filt["status"].isin(closed_like) | df_filt["result"].isin(result_like)]
+st.dataframe(
+    closed_df[["bet_id","ts","market","ref","legs_short","odds","stake","status","result","pnl","tag"]],
+    use_container_width=True, hide_index=True
+)
+
+st.subheader("All Entries")
+st.dataframe(
+    df_filt[["bet_id","ts","market","ref","legs_short","odds","p_win","ev","stake","status","result","pnl","tag"]],
+    use_container_width=True, hide_index=True
+)
+
+# ---- Export filtered ----
+csv_bytes = df_filt.to_csv(index=False, encoding="utf-8").encode("utf-8")
+st.download_button("⬇️ Download filtered bets.csv", data=csv_bytes, file_name="filtered_bets.csv", mime="text/csv")
+
+# ---- Normalize & Save whole log ----
+if st.button("🧹 Normalize & Save bets_log.csv"):
+    df.to_csv(log_path, index=False, encoding="utf-8")
+    st.success(f"Normalized and saved → {log_path}")
+    if hasattr(st, "rerun"): st.rerun()
+    else: st.experimental_rerun()
+
+
+
+
+

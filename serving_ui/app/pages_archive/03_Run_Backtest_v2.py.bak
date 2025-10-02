@@ -1,0 +1,28 @@
+import streamlit as st
+from pathlib import Path
+from core_engine.utils.paths import DB_DIR
+from core_engine.backtest.backtest_past import run_backtest
+
+st.title("Run Backtest (Simulated)")
+
+features_path = DB_DIR / "features.csv"
+if not features_path.exists():
+    st.warning(f"`features.csv` not found at: {features_path}. Run ETL + Train first (see Edge Scanner page or terminal).")
+else:
+    st.success("Features found. Ready to backtest.")
+
+seasons = st.multiselect("Seasons", options=[2021, 2022, 2023, 2024], default=[2024])
+threshnew = st.slider("Edge threshnew", 0.0, 0.1, 0.00, 0.005)
+
+if st.button("Run backtest"):
+    if not features_path.exists():
+        st.error("Cannot run: features.csv missing. Please run ETL first.")
+    else:
+        run_backtest(seasons=seasons, weeks=None, edge_threshnew=threshnew)
+        st.success("Backtest completed. See Bet History â†’ Simulated.")
+
+
+
+
+
+

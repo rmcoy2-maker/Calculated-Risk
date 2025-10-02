@@ -1,0 +1,70 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+import os
+import io
+import pandas as pd
+import streamlit as st
+
+\#\ Robust\ import:\ absolute,\ then\ relative,\ then\ local\ fallback\ntry:\n\ \ \ \ from\ app\.util\.loader_scores\ import\ load_edges_or_scores\nexcept\ Exception:\n\ \ \ \ try:\n\ \ \ \ \ \ \ \ from\ util\.loader_scores\ import\ load_edges_or_scores\n\ \ \ \ except\ Exception:\n\ \ \ \ \ \ \ \ import\ pandas\ as\ _pd,\ os\ as\ _os\n\ \ \ \ \ \ \ \ def\ load_edges_or_scores\(\):\n\ \ \ \ \ \ \ \ \ \ \ \ repo\ =\ _os\.path\.abspath\(_os\.path\.join\(__file__,\ "\.\.",\ "\.\.",\ "\.\."\)\)\n\ \ \ \ \ \ \ \ \ \ \ \ scores\ =\ _os\.path\.join\(repo,\ "exports",\ "parlay_scores\.csv"\)\n\ \ \ \ \ \ \ \ \ \ \ \ edges\ \ =\ _os\.path\.join\(repo,\ "exports",\ "edges\.csv"\)\n\ \ \ \ \ \ \ \ \ \ \ \ if\ _os\.path\.exists\(scores\):\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ return\ _pd\.read_csv\(scores\),\ scores\n\ \ \ \ \ \ \ \ \ \ \ \ elif\ _os\.path\.exists\(edges\):\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ return\ _pd\.read_csv\(edges\),\ edges\n\ \ \ \ \ \ \ \ \ \ \ \ else:\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ return\ _pd\.DataFrame\(\),\ edges
+st.title("Parlay Scored Explorer")
+st.caption("Loads parlay_scores.csv when available (column **parlay_proba**), otherwise falls back to edges.csv.")
+
+df, src_path = load_edges_or_scores()
+st.write(f"**Source:** `{src_path}` • **Rows:** {len(df):,}")
+
+has_score = "parlay_proba" in df.columns
+if not has_score:
+    st.warning("No `parlay_proba` found. Did you run `predict_parlay_score.py`? Showing base edges instead.", icon="⚠️")
+
+# Basic filters
+left, right = st.columns(2)
+with left:
+    seasons = sorted([int(x) for x in pd.to_numeric(df.get("season"), errors="coerce").dropna().unique().tolist()]) if "season" in df.columns else []
+    season_sel = st.multiselect("Season", seasons, seasons[-1:]) if seasons else []
+with right:
+    weeks = sorted([int(x) for x in pd.to_numeric(df.get("week"), errors="coerce").dropna().unique().tolist()]) if "week" in df.columns else []
+    week_sel = st.multiselect("Week", weeks) if weeks else []
+
+work = df.copy()
+if season_sel:
+    work = work[work["season"].isin(season_sel)]
+if week_sel:
+    work = work[work["week"].isin(week_sel)]
+
+# Threshold slider if score exists
+if has_score:
+    thr = st.slider("Min parlay probability", 0.0, 1.0, 0.70, 0.01)
+    work = work[work["parlay_proba"].fillna(0) >= thr]
+    st.caption(f"{len(work):,} rows ≥ {thr:.2f}")
+
+# Show a compact set of columns up top if present
+preferred_cols = [c for c in [
+    "ts","season","week","sport","league","market","side","line","odds","p_win","ev","parlay_proba",
+    "dec_comb","legs","parlay_stake","team_name","team_name_short","home","away","game_id","gamestatus","schedule_date"
+] if c in work.columns]
+
+with st.expander("Preview (top 2,500 rows)", expanded=True):
+    preview = work[preferred_cols] if preferred_cols else work
+    st.dataframe(preview.head(2500))
+
+# Download filtered as CSV
+def to_csv_bytes(df_in: pd.DataFrame) -> bytes:
+    bio = io.BytesIO()
+    df_in.to_csv(bio, index=False)
+    return bio.getvalue()
+
+st.download_button(
+    label="Download filtered as CSV",
+    data=to_csv_bytes(work),
+    file_name="parlay_scored_filtered.csv",
+    mime="text/csv"
+)
+
+# Quick distribution of scores
+if has_score:
+    import numpy as np
+    qs = np.quantile(pd.to_numeric(work["parlay_proba"], errors="coerce").fillna(0), [0,.25,.5,.75,.9,.95,.99,1])
+    st.write("**Score quantiles:**", {k: round(float(v),3) for k,v in zip(["min","25%","50%","75%","90%","95%","99%","max"], qs)})
+

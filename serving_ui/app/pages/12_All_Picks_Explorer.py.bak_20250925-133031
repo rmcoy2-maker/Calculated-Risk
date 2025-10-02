@@ -1,0 +1,117 @@
+import streamlit as st
+import datetime
+import pandas as pd
+import re
+from pathlib import Path
+
+EDGES_CSV = Path("exports/edges.csv")
+MIN_SEASON = 1966
+MAX_SEASON_FALLBACK = 2025
+WEEKS = list(range(1,23))
+
+def read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists(): return pd.DataFrame()
+    try:
+        if path.stat().st_size == 0: return pd.DataFrame()
+    except Exception: pass
+    for kw in ({"encoding":"utf-8-sig"}, {}, {"engine":"python"}):
+        try: return pd.read_csv(path, **kw)
+        except pd.errors.EmptyDataError: return pd.DataFrame()
+        except Exception: continue
+    return pd.DataFrame()
+
+def load_edges() -> pd.DataFrame:
+    df = read_csv_safe(EDGES_CSV)
+    if df.empty: return df
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    df["sort_ts"] = pd.to_datetime(df.get("ts"), errors="coerce")
+    for c in ("season","week"):
+        if c not in df.columns: df[c] = None
+    return df
+
+def seasons_available(df: pd.DataFrame) -> list[int]:
+    if df.empty or "season" not in df.columns:
+        return list(range(MIN_SEASON, MAX_SEASON_FALLBACK + 1))
+    s = pd.to_numeric(df["season"], errors="coerce").dropna().astype(int)
+    if s.empty:
+        return list(range(MIN_SEASON, MAX_SEASON_FALLBACK + 1))
+    lo, hi = max(MIN_SEASON, int(s.min())), int(s.max())
+    hi = max(hi, MAX_SEASON_FALLBACK)
+    return list(range(lo, hi + 1))
+
+st.subheader("All Picks Explorer")
+
+df = load_edges()
+if df.empty:
+    st.info("No edges found in exports/edges.csv")
+    st.stop()
+
+# --- defaults ---
+today = datetime.date.today()
+current_year = today.year
+# crude NFL week estimate: assume season starts first Sunday of September
+season_start = datetime.date(current_year, 9, 1)
+first_sunday = season_start + datetime.timedelta(days=(6 - season_start.weekday()) % 7)
+week_guess = max(1, min(22, ((today - first_sunday).days // 7) + 1))
+
+# Row 1
+r1c1, r1c2, r1c3, r1c4 = st.columns([3,2,2,1])
+with r1c1:
+    search = st.text_input("Search (ref/side/market/team/game)", "", placeholder="e.g. chargers, over, dk, moneyline…")
+with r1c2:
+    sports = sorted(x for x in df.get("sport", pd.Series(dtype=str)).dropna().astype(str).unique() if x)
+    default_sport = ["NFL"] if "NFL" in sports else []
+    sport_sel = st.multiselect("Sport", sports, default=default_sport)
+with r1c3:
+    leagues = sorted(x for x in df.get("league", pd.Series(dtype=str)).dropna().astype(str).unique() if x)
+    default_league = ["NFL"] if "NFL" in leagues else []
+    league_sel = st.multiselect("League", leagues, default=default_league)
+with r1c4:
+    newest_first = st.toggle("Newest first", value=True)
+
+# Row 2
+r2c1, r2c2, r2c3 = st.columns([3,3,1])
+avail_seasons = seasons_available(df)
+with r2c1:
+    seasons_all = ["All"] + [str(y) for y in avail_seasons]
+    if "apx_seasons" not in st.session_state:
+        st.session_state["apx_seasons"] = [str(current_year)]
+    seasons_sel = st.multiselect("Seasons", seasons_all, default=st.session_state["apx_seasons"])
+    seasons_pick = [int(y) for y in avail_seasons] if "All" in seasons_sel else [int(y) for y in seasons_sel if re.fullmatch(r"\d{4}", y or "")]
+with r2c2:
+    weeks_all = [str(w) for w in WEEKS]
+    if "apx_weeks" not in st.session_state:
+        st.session_state["apx_weeks"] = [str(week_guess)]
+    weeks_sel = st.multiselect("Weeks (1–22)", weeks_all, default=st.session_state["apx_weeks"])
+    weeks_pick = [int(w) for w in weeks_sel if w.isdigit()]
+with r2c3:
+    if st.button("Clear filters", use_container_width=True):
+        search = ""
+        st.session_state["apx_seasons"] = ["All"]
+        st.session_state["apx_weeks"] = weeks_all
+
+# Filtering
+out = df
+if search.strip():
+    q = search.lower()
+    cols = [c for c in ["ref","side","market","game_id","team","league","sport"] if c in out.columns]
+    if cols:
+        mask = pd.Series(False, index=out.index)
+        for c in cols:
+            mask = mask | out[c].astype(str).str.lower().str.contains(q, na=False)
+        out = out[mask]
+if sport_sel:
+    out = out[out["sport"].astype(str).isin(sport_sel)]
+if league_sel:
+    out = out[out["league"].astype(str).isin(league_sel)]
+if seasons_pick:
+    out = out[out["season"].astype("Int64").isin(seasons_pick)]
+if weeks_pick:
+    out = out[out["week"].astype("Int64").isin(weeks_pick)]
+
+# Sort & show
+if "sort_ts" in out.columns:
+    out = out.sort_values("sort_ts", ascending=not newest_first, na_position="last").reset_index(drop=True)
+
+st.dataframe(out, use_container_width=True, hide_index=True)

@@ -1,0 +1,422 @@
+from __future__ import annotations
+import streamlit as st
+from app.lib.auth import login, show_logout
+# === Auth (auto-injected) ===
+import streamlit as st  # ensured
+from app.lib.auth import login, show_logout
+
+auth = login(required=False)   # or required=True for protected pages
+if not auth.authenticated:
+    st.info("You are in read-only mode.")
+show_logout()  # sidebar logout
+# === /Auth (auto-injected) ===
+from __future__ import annotations
+import streamlit as st
+# --- import bootstrap so 'app' package is importable when run from anywhere ---
+import sys
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+# file: .../serving_ui/app/pages/<page>.py  -> parents[2] = .../serving_ui
+_SERVING_UI = _HERE.parents[2]
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+# -----------------------------------------------------------------------------import streamlit as st
+st.set_page_config(page_title='13 Bet Log', page_icon='📈', layout='wide')
+
+import streamlit as st
+
+import streamlit as st
+
+
+import streamlit as st
+
+
+import streamlit as st
+# --- diagnostics import (robust) ---
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        # add repo/serving_ui to sys.path so 'app' is importable
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            # fallback if pages run with CWD=app
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+            def mount_in_sidebar(page_name: str):
+                return None
+# --- /diagnostics import (robust) ---
+try:
+    pass
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+try:
+    # Preferred absolute import (when 'app' is a proper package)
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        # Fallback if pages are executed such that relative path works
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+        # Final no-op guard
+        def __nfp_apply(_): 
+            return
+import streamlit as st  # ensure alias available
+__nfp_apply(st)
+import streamlit as st
+st.markdown("""
+<style>
+  .block-container {max-width: 1600px; padding-top: 0.5rem; padding-left: 1.0rem; padding-right: 1.0rem;}
+</style>
+""", unsafe_allow_html=True)
+# -*- coding: utf-8 -*-
+# --- auto-added: newest-first patch ---
+
+# --- end auto-added ---
+from app.bootstrap import bootstrap_paths
+bootstrap_paths()
+
+
+from pathlib import Path
+
+
+import pandas as pd
+
+
+import streamlit as st
+BETS_CSV    = Path("exports/bets_log.csv")
+
+
+PARLAYS_CSV = Path("exports/parlays.csv")
+
+
+
+
+
+def _read_csv(path: Path) -> pd.DataFrame:
+
+
+    # Return empty DataFrame for missing or 0-byte files
+
+
+    if not path.exists():
+
+
+        return pd.DataFrame()
+
+
+    try:
+
+
+        if getattr(path, "stat", None) and path.stat().st_size == 0:
+
+
+            return pd.DataFrame()
+
+
+    except Exception:
+
+
+        # If stat fails, fall through to guarded reads
+
+
+        pass
+
+
+
+
+
+    # Try normal / BOM read, then guarded fallbacks
+
+
+    try:
+
+
+        return pd.read_csv(path, encoding="utf-8-sig")
+
+
+    except pd.errors.EmptyDataError:
+
+
+        return pd.DataFrame()
+
+
+    except pd.errors.ParserError:
+
+
+        # Retry with python engine if parser struggles
+
+
+        try:
+
+
+            return pd.read_csv(path, engine="python")
+
+
+        except Exception:
+
+
+            return pd.DataFrame()
+
+
+    except Exception:
+
+
+        try:
+
+
+            return pd.read_csv(path)
+
+
+        except Exception:
+
+
+            return pd.DataFrame()
+
+
+
+
+
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+
+
+    if df.empty:
+
+
+        return df
+
+
+    out = df.copy()
+
+
+    out.columns = [str(c).strip().lower() for c in out.columns]
+
+
+    out["sort_ts"] = pd.to_datetime(out.get("ts"), errors="coerce")
+
+
+    for c in ("stake","profit","result"):
+
+
+        if c not in out.columns:
+
+
+            out[c] = 0 if c != "result" else ""
+
+
+    return out
+
+
+
+
+
+def build_betlog() -> pd.DataFrame:
+
+
+    bets    = _normalize(_read_csv(BETS_CSV))
+
+
+    parlays = _normalize(_read_csv(PARLAYS_CSV))
+
+
+
+
+
+    # If both are empty, return a well-formed empty frame so the UI still renders
+
+
+    if bets.empty and parlays.empty:
+
+
+        cols = ["ts","stake","profit","result","sort_ts","origin"]
+
+
+        return pd.DataFrame(columns=cols)
+
+
+
+
+
+    if not bets.empty:
+
+
+        bets["origin"] = "bet"
+
+
+    if not parlays.empty:
+
+
+        parlays["origin"] = "parlay"
+
+
+
+
+
+    cols = sorted(set(bets.columns) | set(parlays.columns))
+
+
+    combined = pd.concat(
+
+
+        [bets.reindex(columns=cols), parlays.reindex(columns=cols)],
+
+
+        ignore_index=True
+
+
+    )
+
+
+    return combined.sort_values("sort_ts").reset_index(drop=True)
+
+
+
+
+
+def summarize(bets: pd.DataFrame) -> dict:
+
+
+    if bets.empty:
+
+
+        return dict(bets=0,wins=0,losses=0,pushes=0,roi=None)
+
+
+    res = bets["result"].astype(str).str.lower()
+
+
+    wins = (res == "win").sum()
+
+
+    losses = (res == "loss").sum()
+
+
+    pushes = (res == "push").sum()
+
+
+    stake_sum = pd.to_numeric(bets["stake"], errors="coerce").fillna(0).sum()
+
+
+    profit_sum = pd.to_numeric(bets["profit"], errors="coerce").fillna(0).sum()
+
+
+    roi = (profit_sum / stake_sum) if stake_sum > 0 else None
+
+
+    return dict(bets=len(bets), wins=wins, losses=losses, pushes=pushes, roi=roi)
+
+
+
+
+
+def equity_series(bets: pd.DataFrame, starting_bankroll: float = 100.0) -> pd.DataFrame:
+
+
+    p = pd.to_numeric(bets.get("profit", 0), errors="coerce").fillna(0)
+
+
+    equity = starting_bankroll + p.cumsum()
+
+
+    out = pd.DataFrame({"ts": bets["sort_ts"], "equity": equity})
+
+
+    out.set_index("ts", inplace=True)
+
+
+    return out
+
+
+
+
+
+# ---- UI ----
+
+
+bets_df = build_betlog()
+
+
+
+
+
+st.subheader("Bet Log — Summary")
+
+
+S = summarize(bets_df)
+
+
+c1,c2,c3,c4,c5 = st.columns(5)
+
+
+c1.metric("Bets", S["bets"])
+
+
+c2.metric("Wins", S["wins"])
+
+
+c3.metric("Losses", S["losses"])
+
+
+c4.metric("Pushes", S["pushes"])
+
+
+c5.metric("ROI", "-" if S["roi"] is None else f"{S['roi']*100:.1f}%")
+
+
+
+
+
+st.subheader("Bankroll equity")
+
+
+start_bankroll = st.number_input("Starting bankroll (units)", 0.0, 1e9, 100.0, 1.0)
+
+
+if bets_df.empty:
+
+
+    st.info("No bets/parlays found (empty or missing CSVs).")
+
+
+else:
+
+
+    st.line_chart(equity_series(bets_df, starting_bankroll=start_bankroll), y="equity")
+
+
+
+
+
+st.subheader("Rows")
+
+
+st.dataframe(bets_df, use_container_width=True, hide_index=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

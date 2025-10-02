@@ -1,0 +1,23 @@
+@st.cache_data(ttl=60)
+def load_edges() -> pd.DataFrame:
+    from pathlib import Path
+    import os, pandas as pd
+
+    def _exports_dir():
+        env = os.environ.get('EDGE_FINDER_ROOT')
+        if env and (Path(env) / 'exports').exists():
+            return Path(env) / 'exports'
+        if Path('exports').exists():
+            return Path('exports')
+        return Path('.')
+    exp = _exports_dir()
+    for name in ['edges_master.csv', 'edges_graded_full.csv', 'edges_graded_plus.csv', 'edges_clean.csv', 'edges_graded.csv', 'edges.csv']:
+        p = exp / name
+        try:
+            if p.exists() and p.stat().st_size > 0:
+                df = pd.read_csv(p, low_memory=False, encoding='utf-8-sig')
+                if not df.empty:
+                    return df
+        except Exception:
+            pass
+    return pd.DataFrame()

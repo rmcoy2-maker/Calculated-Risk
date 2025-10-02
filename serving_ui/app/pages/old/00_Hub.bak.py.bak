@@ -1,0 +1,92 @@
+import streamlit as st
+try:
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+# ---- PATH SHIM (works whether launched from repo root, app/, or pages/) ----
+import sys, pathlib
+# --- auto-added: newest-first patch ---
+try:
+    import streamlit as st  # ensure alias available
+except Exception:
+    import streamlit as st
+from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+__nfp_apply(st)
+# --- end auto-added ---
+HERE = pathlib.Path(__file__).resolve()
+APP_DIR = HERE.parents[1]                 # ...\serving_ui\app
+PARENT  = APP_DIR.parent                  # ...\serving_ui
+if str(PARENT) not in sys.path:
+    sys.path.insert(0, str(PARENT))
+# ---- END PATH SHIM ----
+
+# pages/00_Hub.py — resilient quick-links hub
+from pathlib import Path
+import streamlit as st
+
+PAGES_DIR = APP_DIR / "pages"
+
+CANDIDATE_LOGOS = [
+    APP_DIR / "assets" / "logo.png",
+    APP_DIR / "assets" / "calculated_risk_logo.png",
+]
+LOGO = next((p for p in CANDIDATE_LOGOS if p.exists()), None)
+
+st.set_page_config(
+    page_title="Calculated Risk • Hub",
+    page_icon=str(LOGO) if LOGO else "🏈",
+    layout="wide",
+)
+
+# hero
+col1, col2 = st.columns([1, 3])
+with col1:
+    if LOGO:
+        st.image(str(LOGO), width=200)
+with col2:
+    st.title("Calculated Risk")
+    st.markdown("**Edge Finder • Betting Analytics • Parlay Builder**")
+
+st.divider()
+
+def safe_link(page_filename: str, label: str):
+    """Try page_link first. If registry lookup fails, fall back to a button+switch_page."""
+    target = f"pages/{page_filename}"
+    try:
+        # Works when Streamlit has registered pages under this entrypoint
+        st.page_link(target, label=label)
+    except Exception:
+        # Fallback path: render a button that switches pages if available
+        if (PAGES_DIR / page_filename).exists():
+            if st.button(label):
+                try:
+                    st.switch_page(target)
+                except Exception:
+                    st.warning(f"Couldn't switch to {target}. Try launching from app root.")
+        else:
+            st.caption(f"⛔ missing: {target}")
+
+# quick links row
+cols = st.columns(4)
+with cols[0]: safe_link("09_Parlay_Builder.py", "🎲 Parlay Builder")
+with cols[1]: safe_link("06_Bet_Log.py",        "📝 Bet Log")
+with cols[2]: safe_link("03_Backtest.py",       "🧪 Backtest")
+with cols[3]: safe_link("98_Diagnostics.py",    "🛠️ Diagnostics")
+
+st.divider()
+with st.expander("⚙️ Diagnostics"):
+    st.write("APP_DIR:", APP_DIR)
+    st.write("PAGES_DIR:", PAGES_DIR)
+    st.write("Has logo:", bool(LOGO))
+
+
+
+
+
+
+

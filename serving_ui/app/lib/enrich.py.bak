@@ -1,0 +1,149 @@
+# -*- coding: utf-8 -*-
+"""
+enrich.py — safe utilities for normalizing odds/probabilities and attaching team fields.
+Imported by 00_Data_Diagnostics and others.
+
+Design:
+- No top-level dataframe work (so import never explodes).
+- Column discovery happens inside functions.
+"""
+
+from __future__ import annotations
+from typing import Dict, Optional
+import numpy as np
+import pandas as pd
+
+__all__ = ["add_probs_and_ev", "attach_teams", "american_to_prob", "norm_market"]
+
+# ---------- helpers ----------
+
+def american_to_prob(odds) -> float:
+    try:
+        o = float(odds)
+    except Exception:
+        return np.nan
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    if o < 0:
+        ao = abs(o)
+        return ao / (ao + 100.0)
+    return np.nan
+
+def norm_market(m: str) -> str:
+    if not isinstance(m, str):
+        return ""
+    m = m.strip().lower()
+    if m in ("h2h", "ml", "moneyline", "money line"):
+        return "H2H"
+    if m in ("spread", "spreads", "point spread"):
+        return "SPREADS"
+    if m in ("total", "totals", "over/under", "ou"):
+        return "TOTALS"
+    return m.upper()
+
+# nicknames for NFL teams (extend as needed)
+_NFL_ABBR_TO_NICK = {
+    "BUF":"Bills","MIA":"Dolphins","NE":"Patriots","NWE":"Patriots","NYJ":"Jets",
+    "BAL":"Ravens","CIN":"Bengals","CLE":"Browns","PIT":"Steelers",
+    "HOU":"Texans","IND":"Colts","JAX":"Jaguars","JAC":"Jaguars","TEN":"Titans",
+    "DEN":"Broncos","KC":"Chiefs","KCC":"Chiefs","LAC":"Chargers","LV":"Raiders","LVR":"Raiders",
+    "DAL":"Cowboys","NYG":"Giants","PHI":"Eagles","WAS":"Commanders","WSH":"Commanders",
+    "CHI":"Bears","DET":"Lions","GB":"Packers","GNB":"Packers","MIN":"Vikings",
+    "ATL":"Falcons","CAR":"Panthers","NO":"Saints","NOR":"Saints","TB":"Buccaneers","TAM":"Buccaneers",
+    "ARI":"Cardinals","LAR":"Rams","SEA":"Seahawks","SF":"49ers","SFO":"49ers",
+}
+
+def _to_nick(x: str) -> str:
+    if not isinstance(x, str):
+        return ""
+    s = x.strip()
+    if not s:
+        return ""
+    u = s.upper().replace(".", "").replace("-", " ").strip()
+    if u in _NFL_ABBR_TO_NICK:
+        return _NFL_ABBR_TO_NICK[u]
+    parts = [p for p in s.title().split() if p]
+    return parts[-1] if parts else ""
+
+def _colmap(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    def pick(cands):
+        for c in cands:
+            if c in df.columns:
+                return c
+        return None
+
+    return {
+        "odds":   pick(["odds","american_odds","price","price_american","american","line_price","display_odds"]),
+        "prob":   pick(["p_win","prob","prob_win","model_prob","win_prob","probability"]),
+        "market": pick(["market","Market","bet_type","wager_type"]),
+        "team":   pick(["team","Team","selection","pick_team","bet_team","side_team"]),
+        "opp":    pick(["opponent","opp","vs_team","vs"]),
+        "home":   pick(["HomeTeam","home_team","home","home_name","home_display"]),
+        "away":   pick(["AwayTeam","away_team","away","away_name","away_display"]),
+        "side":   pick(["side","Side"]),
+        "line":   pick(["line","Line","handicap","spread","total"]),
+        "date":   pick(["date","Date","event_date","game_date","start_time","kickoff","created_at"]),
+        "season": pick(["Season","season"]),
+        "week":   pick(["Week","week"]),
+    }
+
+# ---------- public API ----------
+
+def add_probs_and_ev(df: pd.DataFrame,
+                     odds_col: Optional[str] = None,
+                     prob_col: Optional[str] = None) -> pd.DataFrame:
+    """
+    Ensure df has numeric 'odds' and 'p_win' and compute EV per $1 as '_ev_per_$1'.
+    Leaves originals intact; writes standardized columns alongside.
+    """
+    if df is None or df.empty:
+        return df
+
+    cols = _colmap(df)
+    oc = odds_col or cols["odds"]
+    pc = prob_col or cols["prob"]
+
+    # Standardize odds
+    if oc and oc != "odds":
+        out_odds = pd.to_numeric(df[oc], errors="coerce")
+    else:
+        out_odds = pd.to_numeric(df.get("odds", np.nan), errors="coerce")
+    df["odds"] = out_odds
+
+    # Probability
+    if pc:
+        df["p_win"] = pd.to_numeric(df[pc], errors="coerce").clip(0,1)
+    else:
+        df["p_win"] = df["odds"].map(american_to_prob)
+
+    # EV per $1
+    o = pd.to_numeric(df["odds"], errors="coerce")
+    payout = np.where(o > 0, o / 100.0, np.where(o < 0, 100.0 / np.abs(o), np.nan))
+    p = pd.to_numeric(df["p_win"], errors="coerce").clip(0,1)
+    df["_ev_per_$1"] = p * payout - (1 - p)
+
+    # Normalize market if present
+    mc = cols["market"]
+    if mc:
+        df["market"] = df[mc].map(norm_market)
+    elif "market" in df.columns:
+        df["market"] = df["market"].map(norm_market)
+
+    return df
+
+def attach_teams(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds normalized team helper columns (nicknames) when inputs exist:
+    - _home_team, _away_team, _pick_team, _opp_team
+    """
+    if df is None or df.empty:
+        return df
+
+    cols = _colmap(df)
+
+    df["_home_team"] = df[cols["home"]].astype(str).map(_to_nick) if cols["home"] else ""
+    df["_away_team"] = df[cols["away"]].astype(str).map(_to_nick) if cols["away"] else ""
+    df["_pick_team"] = df[cols["team"]].astype(str).map(_to_nick) if cols["team"] else ""
+    df["_opp_team"]  = df[cols["opp"]].astype(str).map(_to_nick)  if cols["opp"]  else ""
+
+    return df

@@ -1,0 +1,133 @@
+import math
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+from serving_ui.app._layout import header
+header('All Picks Explorer')
+st.page_link('serving_ui/app/pages/13_Portfolio_Dashboard.py', label='Ã¢â€\xa0â€™ Open Portfolio Dashboard', icon='Ã°Å¸â€œË†')
+try:
+    from app.lib.odds_utils import american_to_implied
+except Exception:
+
+    def _american_to_decimal(odds: int) -> float:
+        o = int(odds)
+        return 1 + (o / 100.0 if o > 0 else 100.0 / abs(o))
+
+    def american_to_implied(odds: int) -> float:
+        return max(1e-09, min(0.999999, 1.0 / _american_to_decimal(int(odds))))
+st.caption('Tip: +EV = model probability Ã¢Ë†â€™ implied probability from the bookÃ¢â‚¬â„¢s odds (in percentage points).')
+
+def _find_edges_csv() -> Path | None:
+    here = Path(__file__).resolve()
+    root = here.parents[2]
+    candidates = [root / 'exports' / 'edges.csv', root / 'data_scaffnew' / 'exports' / 'edges.csv', root / 'serving_ui' / 'exports' / 'edges.csv']
+    for p in candidates:
+        if p.exists() and p.stat().st_size > 0:
+            return p
+    return None
+
+def _load_edges() -> pd.DataFrame:
+    p = _find_edges_csv()
+    if not p:
+        st.warning('Could not find **exports/edges.csv**. Run your scorer (e.g., `scan_edges.py` or `score_games.py`) first.')
+        return pd.DataFrame()
+    df = pd.read_csv(p)
+    df.columns = [c.strip().lower() for c in df.columns]
+    if 'odds' in df.columns:
+        try:
+            df['odds'] = df['odds'].astype(int)
+            df['implied_q'] = df['odds'].map(american_to_implied)
+        except Exception:
+            pass
+    if 'model_p' in df.columns and 'implied_q' in df.columns:
+        df['ev_pp'] = (df['model_p'] - df['implied_q']) * 100.0
+    if 'market' in df.columns:
+        df['market'] = df['market'].astype(str)
+    return df
+st.divider()
+st.subheader('Alerts (export)')
+if 'ev_pp' in f.columns:
+    ev_thresh = st.number_input('Alert when +EV Ã¢â€°Â¥ (pp)', value=3.0, step=0.5)
+    to_alert = f[f['ev_pp'] >= ev_thresh].copy()
+    if not to_alert.empty:
+        out_csv = to_alert.to_csv(index=False).encode()
+        st.download_button('Download alerts.csv', data=out_csv, file_name='alerts.csv', mime='text/csv')
+        st.caption(f'{len(to_alert)} rows meet threshnew.')
+    else:
+        st.caption('No rows meet the alert threshnew.')
+df = _load_edges()
+if df.empty:
+    st.stop()
+left, right = st.columns([2, 3])
+with left:
+    markets = sorted(df['market'].dropna().unique()) if 'market' in df.columns else []
+    sel_markets = st.multiselect('Markets', markets, default=markets[:4] if markets else [])
+    if 'book' in df.columns:
+        books = sorted(df['book'].dropna().unique())
+        sel_books = st.multiselect('Books', books, default=books)
+    else:
+        sel_books = None
+    if 'season' in df.columns:
+        season_vals = sorted((v for v in df['season'].dropna().unique() if str(v).isdigit()))
+        default_season = season_vals[-1] if season_vals else None
+        season_pick = st.selectbox('Season', ['(any)'] + [str(v) for v in season_vals], index=1 + season_vals.index(default_season) if default_season in season_vals else 0)
+    else:
+        season_pick = '(any)'
+    if 'week' in df.columns:
+        week_vals = sorted((v for v in df['week'].dropna().unique() if str(v).isdigit()))
+        week_pick = st.selectbox('Week', ['(any)'] + [str(v) for v in week_vals], index=0)
+    else:
+        week_pick = '(any)'
+with right:
+    ev_min = st.slider('Minimum +EV (percentage points)', -5.0, 25.0, 0.0, 0.5)
+    prob_min = st.slider('Min model probability (%)', 0.0, 100.0, 0.0, 1.0)
+    q = st.text_input('Search (team, market, book, ref, side)', value='')
+f = df
+if sel_markets and 'market' in f.columns:
+    f = f[f['market'].isin(sel_markets)]
+if sel_books is not None and 'book' in f.columns:
+    f = f[f['book'].isin(sel_books)]
+if 'ev_pp' in f.columns:
+    f = f[f['ev_pp'] >= ev_min]
+if 'model_p' in f.columns:
+    f = f[f['model_p'] * 100.0 >= prob_min]
+if season_pick and season_pick != '(any)' and ('season' in f.columns):
+    f = f[f['season'].astype(str) == season_pick]
+if week_pick and week_pick != '(any)' and ('week' in f.columns):
+    f = f[f['week'].astype(str) == week_pick]
+if q:
+    ql = q.lower()
+    hay_cols = [c for c in ['team', 'home', 'away', 'market', 'book', 'ref', 'side', 'selection'] if c in f.columns]
+    if hay_cols:
+        mask = pd.Series(False, index=f.index)
+        for c in hay_cols:
+            mask = mask | f[c].astype(str).str.lower().str.contains(ql, na=False)
+        f = f[mask]
+st.write(f'**Rows:** {len(f):,} (of {len(df):,})')
+display_cols = []
+for c in ['season', 'week', 'game_id', 'book', 'market', 'side', 'selection', 'line', 'odds', 'model_p', 'implied_q', 'ev_pp', 'ref', 'ts']:
+    if c in f.columns:
+        display_cols.append(c)
+if not display_cols:
+    display_cols = list(f.columns)
+fmt = {}
+if 'model_p' in f.columns:
+    fmt['model_p'] = '{:.1%}'
+if 'implied_q' in f.columns:
+    fmt['implied_q'] = '{:.1%}'
+if 'ev_pp' in f.columns:
+    fmt['ev_pp'] = '{:.2f}'
+st.dataframe(f[display_cols].reset_index(drop=True), hide_index=True, column_config={k: st.column_config.NumberColumn(format=v) for k, v in fmt.items()}, width='stretch')
+with st.expander('Summary'):
+    if 'ev_pp' in f.columns:
+        st.metric('Median +EV (pp)', f"{f['ev_pp'].median():.2f}")
+        st.metric('Mean +EV (pp)', f"{f['ev_pp'].mean():.2f}")
+    if 'model_p' in f.columns:
+        st.metric('Avg model p', f"{f['model_p'].mean() * 100.0:.2f}%")
+    if 'odds' in f.columns:
+        try:
+            st.metric('Median odds', int(pd.to_numeric(f['odds'], errors='coerce').median()))
+        except Exception:
+            pass
+csv_bytes = f[display_cols].to_csv(index=False).encode()
+st.download_button('Download filtered CSV', data=csv_bytes, file_name='all_picks_filtered.csv', mime='text/csv')

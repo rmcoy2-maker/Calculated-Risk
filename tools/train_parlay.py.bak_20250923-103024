@@ -1,0 +1,114 @@
+import argparse, os, joblib
+import numpy as np
+import pandas as pd
+
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+from sklearn.dummy import DummyClassifier
+
+def load_edges(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    return df
+
+def coerce_numeric(df: pd.DataFrame, cols):
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = np.nan
+    return df
+
+def normalize_result_series(s: pd.Series) -> pd.Series:
+    s = s.astype(str).str.strip().str.lower()
+    map_win  = {"win":1,"w":1,"1":1,"true":1,"t":1,"yes":1,"y":1}
+    map_lose = {"lose":0,"l":0,"0":0,"false":0,"f":0,"no":0,"n":0}
+    return s.map({**map_win, **map_lose})
+
+def main():
+    ap = argparse.ArgumentParser(description="Train parlay propensity model from graded edges.")
+    ap.add_argument("--edges", required=True)
+    ap.add_argument("--out", required=True, help="Output dir for model artifacts")
+    ap.add_argument("--min-season", type=int, default=2017)
+    args = ap.parse_args()
+
+    os.makedirs(args.out, exist_ok=True)
+
+    df = load_edges(args.edges)
+
+    # Filter season
+    if "season" in df.columns:
+        df = df[pd.to_numeric(df["season"], errors="coerce") >= args.min_season].copy()
+    if df.empty:
+        raise SystemExit("No rows after season filter. Ensure edges file has data.")
+
+    # Target: 1=win, 0=lose; drop pushes/unknown
+    if "result" not in df.columns:
+        raise SystemExit("No 'result' column found. Run grader to create wins/losses.")
+    y_series = normalize_result_series(df["result"])
+    mask_valid = y_series.isin([0, 1])
+    df = df[mask_valid].copy()
+    y = y_series[mask_valid].astype(int)
+    if df.empty:
+        raise SystemExit("No trainable rows (only pushes/unknown).")
+
+    # Features
+    num_cols = ["odds","line","p_win","dec_comb","legs","parlay_stake","stake","week_num"]
+    cat_cols = ["market","ref","sport","league"]
+
+    df = coerce_numeric(df, num_cols)
+    for c in cat_cols:
+        if c not in df.columns:
+            df[c] = ""
+X = df[num_cols + cat_cols].copy()
+
+# Drop numeric columns that are entirely NaN in training
+num_cols_used = [c for c in num_cols if df[c].notna().any()]
+cat_cols_used = cat_cols[:]  # keep cats; imputer/OHE can handle empties
+if set(num_cols_used) != set(num_cols):
+    missing_all = sorted(set(num_cols) - set(num_cols_used))
+    print(f"[train_parlay] Dropping all-NaN numeric columns: {missing_all}")
+num_cols = num_cols_used
+    # Preprocess
+    num_pipe = Pipeline([("impute", SimpleImputer(strategy="median"))])
+    cat_pipe = Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
+                         ("oh", OneHotEncoder(handle_unknown="ignore", min_frequency=5))])
+    pre = ColumnTransformer([("num", num_pipe, num_cols),
+                             ("cat", cat_pipe, cat_cols)])
+
+    # One-class fallback so a model is always saved
+    classes = np.unique(y)
+    if len(classes) < 2:
+        print(f"[train_parlay] One-class labels detected (classes={classes}). Using DummyClassifier(strategy='prior').")
+        clf = DummyClassifier(strategy="prior")
+    else:
+        clf = LogisticRegression(max_iter=200, solver="lbfgs")
+
+    pipe = Pipeline([("pre", pre), ("clf", clf)])
+    pipe.fit(X, y)
+
+    # Metric (best-effort)
+    try:
+        prob = pipe.predict_proba(X)[:, 1]
+        auc = roc_auc_score(y, prob)
+    except Exception:
+        auc = float("nan")
+
+    joblib.dump(pipe, os.path.join(args.out, "parlay_model.joblib"))
+    pd.Series({
+        "rows": int(len(df)),
+        "win_rate": float(y.mean()) if len(y) else 0.0,
+        "auc": float(auc),
+        "min_season": int(args.min_season),
+        "num_cols": num_cols, "cat_cols": cat_cols,
+    }).to_json(os.path.join(args.out, "meta.json"), indent=2)
+
+    print(f"Saved model to {args.out}\\parlay_model.joblib  (rows={len(df)}, AUC={auc:.3f})")
+
+if __name__ == "__main__":
+    main()
+

@@ -1,0 +1,254 @@
+import pandas as pd, numpy as np, re, math
+from pathlib import Path
+
+# -------- Helpers --------
+PIPE_COLS = ["season","week","home","away","spread_close","total_close","ml_home","ml_away"]
+
+# Column aliases we may encounter from different scrapers
+ALIASES = {
+    "season": ["season","year"],
+    "week":   ["week","wk","game_week"],
+    "home":   ["home","home_team","team_home","home_name","homeclub","home_name_full"],
+    "away":   ["away","away_team","team_away","visitor","road_name","awayclub","away_name_full"],
+
+    # Spreads (prefer home perspective). Includes TheLines "spread_open".
+    "spread_close": [
+        "spread_close","closing_spread","final_spread","spread_closing","close_spread",
+        "spread","spread_home_close","home_spread_close","home_spread","spread_home",
+        "line_close","closing_line","line","hcp_close","hcp_closing","handicap_close",
+        "spread_open"
+    ],
+
+    # Totals / O/U (you don't have totals yet, but include "total_open" for future scrapes).
+    "total_close": [
+        "total_close","closing_total","final_total","total_closing","close_total",
+        "ou_close","o_u_close","o/u_close","ou","o_u","o/u","total","points_total_close",
+        "total_open"
+    ],
+
+    # Moneylines — include TheLines _est columns.
+    "ml_home": ["ml_home","moneyline_home","home_ml","home_moneyline","ml_h","home_price","ml_home_close","ml_home_est"],
+    "ml_away": ["ml_away","moneyline_away","away_ml","away_moneyline","ml_a","away_price","ml_away_close","ml_away_est"],
+
+    "date":    ["date","game_date","start_date","kickoff","datetime"]
+}
+def _first_present(cols, df_cols):
+    s = set(c.lower() for c in df_cols)
+    for c in cols:
+        if c.lower() in s:
+            return next(x for x in df_cols if x.lower()==c.lower())
+    return None
+
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
+    out = {}
+    for std, alts in ALIASES.items():
+        src = _first_present(alts, df.columns)
+        if src is not None:
+            out[std] = df[src]
+    nd = pd.DataFrame(out)
+
+    # Ensure required pipeline cols exist
+    for c in PIPE_COLS:
+        if c not in nd.columns:
+            nd[c] = np.nan
+
+    # ---- Heuristics to derive home spread/total if still missing ----
+    # Try derive home spread from paired columns if present (e.g., 'home_spread' & 'away_spread')
+    if nd['spread_close'].isna().all():
+        cand_pairs = [
+            ('home_spread_close','away_spread_close'),
+            ('home_spread','away_spread'),
+            ('spread_home','spread_away')
+        ]
+        for h,a in cand_pairs:
+            if h in nd.columns and a in nd.columns:
+                nd['spread_close'] = pd.to_numeric(nd[h], errors='coerce')
+                break
+        if nd['spread_close'].isna().all() and 'spread_open' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['spread_open'], errors='coerce')
+        if nd['spread_close'].isna().all() and 'spread' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['spread'], errors='coerce')
+        if nd['spread_close'].isna().all() and 'line' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['line'], errors='coerce')
+        cand_pairs = [
+            ('home_spread_close','away_spread_close'),
+            ('home_spread','away_spread'),
+            ('spread_home','spread_away')
+        ]
+        for h,a in cand_pairs:
+            if h in nd.columns and a in nd.columns:
+                nd['spread_close'] = pd.to_numeric(nd[h], errors='coerce')
+                break
+        if nd['spread_close'].isna().all() and 'spread_open' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['spread_open'], errors='coerce')
+        if nd['spread_close'].isna().all() and 'spread' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['spread'], errors='coerce')
+        if nd['spread_close'].isna().all() and 'line' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['line'], errors='coerce')
+        if 'spread_open' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['spread_open'], errors='coerce')
+        
+        cand_pairs = [
+            ('home_spread_close','away_spread_close'),
+            ('home_spread','away_spread'),
+            ('spread_home','spread_away')
+        ]
+        for h,a in cand_pairs:
+            if h in nd.columns and a in nd.columns:
+                # choose home column as home spread
+                nd['spread_close'] = pd.to_numeric(nd[h], errors='coerce')
+                break
+
+        # If there is a generic 'spread' column that is numeric, use it
+        if nd['spread_close'].isna().all() and 'spread' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['spread'], errors='coerce')
+
+        # If there is a 'line' that's numeric, treat as spread_close
+        if nd['spread_close'].isna().all() and 'line' in nd.columns:
+            nd['spread_close'] = pd.to_numeric(nd['line'], errors='coerce')
+
+    # Totals: prefer any OU variants
+    if nd['total_close'].isna().all():
+        for c_ in ['ou_close','o_u_close','o/u_close','ou','o_u','o/u','total','closing_total','final_total','points_total_close','total_open']:
+            if c_ in nd.columns:
+                nd['total_close'] = pd.to_numeric(nd[c_], errors='coerce')
+                if nd['total_close'].notna().any():
+                    break
+        for c_ in ['ou_close','o_u_close','o/u_close','ou','o_u','o/u','total','closing_total','final_total','points_total_close','total_open']:
+            if c_ in nd.columns:
+                nd['total_close'] = pd.to_numeric(nd[c_], errors='coerce')
+                if nd['total_close'].notna().any():
+                    break
+        if 'total_open' in nd.columns:
+            nd['total_close'] = pd.to_numeric(nd['total_open'], errors='coerce')
+        
+        for c in ['ou_close','o_u_close','o/u_close','ou','o_u','o/u','total','closing_total','final_total','points_total_close']:
+            if c in nd.columns:
+                nd['total_close'] = pd.to_numeric(nd[c], errors='coerce')
+                if nd['total_close'].notna().any():
+                    break
+    # Coerce types
+    for c in ["season","week"]:
+        nd[c] = pd.to_numeric(nd[c], errors="coerce").astype("Int64")
+
+    for c in ["spread_close","total_close","ml_home","ml_away"]:
+        nd[c] = pd.to_numeric(nd[c], errors="coerce")
+
+    # Standardize team strings
+    for c in ["home","away"]:
+        nd[c] = (nd[c].astype(str)
+                    .str.strip()
+                    .str.replace(r"\s+", " ", regex=True))
+
+    # Prefer only needed cols + optional date for richness
+    keep = PIPE_COLS + ([ "date" ] if "date" in nd.columns else [])
+    return nd[keep]
+
+def read_if_exists(path: Path) -> pd.DataFrame | None:
+    if path.exists():
+        try:
+            df = pd.read_csv(path)
+            return df
+        except Exception as e:
+            print(f"[warn] failed reading {path.name}: {e}")
+    return None
+
+def combine_prefer_non_na(rows: pd.DataFrame) -> pd.Series:
+    """Row-wise combine by choosing first non-null per column in PIPE_COLS+date."""
+    out = {}
+    cols = [c for c in rows.columns if c in PIPE_COLS or c=="date"]
+    for c in cols:
+        s = rows[c]
+        # Choose first non-null value
+        mask = s.notna()
+        out[c] = s[mask].iloc[0] if mask.any() else np.nan
+    return pd.Series(out)
+
+# -------- Load sources --------
+exports = Path("exports")
+exports.mkdir(parents=True, exist_ok=True)
+
+candidate_files = [
+    exports / "historical_odds_thelines.csv",
+    exports / "historical_odds_oddsshark.csv",
+    exports / "historical_odds_soh.csv",
+    exports / "historical_odds_covers.csv",
+]
+
+# Also pull in any extra odds CSVs matching a loose pattern, but avoid the final outputs
+for p in exports.glob("historical_odds_*.csv"):
+    if p.name not in {"historical_odds.csv","historical_odds_merged.csv"} and p not in candidate_files:
+        candidate_files.append(p)
+
+frames = []
+print("[consolidate] starting…")
+for p in candidate_files:
+    df = read_if_exists(p)
+    if df is not None and len(df):
+        nd = normalize(df)
+        nd["source_file"] = p.name
+        frames.append(nd)
+
+if not frames:
+    raise FileNotFoundError("No source odds CSVs found in ./exports. Expected one of: " +
+                            ", ".join(x.name for x in candidate_files))
+
+merged_all = pd.concat(frames, ignore_index=True)
+
+# Basic sanity cleanup
+# Drop obviously empty home/away rows (after normalization)
+merged_all = merged_all[merged_all["home"].notna() & merged_all["away"].notna()]
+
+# De-duplicate exact duplicates first
+merged_all = merged_all.drop_duplicates()
+
+# Now build a canonical, source-agnostic table by (season, week, home, away),
+# picking the first non-null for each metric across sources.
+group_cols = ["season","week","home","away"]
+canon = (merged_all
+         .sort_values(["season","week","home","away","source_file"], na_position="last")
+         .groupby(group_cols, dropna=False, as_index=False).apply(combine_prefer_non_na, include_groups=False)
+         .reset_index(drop=True))
+
+# Ensure pipeline columns exist and in order
+for c in PIPE_COLS:
+    if c not in canon.columns:
+        canon[c] = np.nan
+canon = canon[PIPE_COLS + ([ "date" ] if "date" in canon.columns else [])]
+
+# -------- Write outputs --------
+# Rich merged with provenance
+merged_path = exports / "historical_odds_merged.csv"
+print(f"[write] {merged_path}")\nmerged_all.to_csv(merged_path, index=False)
+
+# Pipeline (narrow) table
+pipe_path = exports / "historical_odds.csv"
+print(f"[write] {pipe_path}")\ncanon[PIPE_COLS].to_csv(pipe_path, index=False)
+
+# -------- Report --------
+def pct(s): 
+    try: 
+        return f"{(pd.Series(s).notna().mean()*100):.1f}%"
+    except: 
+        return "0.0%"
+
+n_all = len(merged_all)
+n_canon = len(canon)
+msg = [
+    f"[done] sources={len(frames)} rows_raw={n_all} rows_canon={n_canon}",
+    f"spread_close avail: {pct(canon['spread_close'])}",
+    f"total_close  avail: {pct(canon['total_close'])}",
+    f"moneyline    avail: {pct((canon[['ml_home','ml_away']].notna().all(axis=1)).astype(int))}",
+]
+print(" | ".join(msg))
+print(f"[write] {merged_path}  |  {pipe_path}")
+
+
+
+
+
+
+
+
+
+

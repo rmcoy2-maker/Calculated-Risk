@@ -1,0 +1,77 @@
+# lib/etl.py
+from __future__ import annotations
+import numpy as np, pandas as pd
+
+ALT_ODDS = ("odds","american","price","price_american","american_odds")
+ALT_PWIN = ("p_win","p_model","prob","model_p","win_prob","p","prob_win")
+ALT_LINE = ("line","points","total","spread")
+ALT_BOOK = ("book","sportsbook","bk")
+ALT_GAME = ("game_id","ref","gid","game")
+ALT_MKT  = ("market","bet_type","wager_type")
+
+def american_to_decimal(o):
+    try: o = float(o)
+    except: return np.nan
+    if o > 0:  return 1.0 + (o/100.0)
+    if o < 0:  return 1.0 + (100.0/abs(o))
+    return np.nan
+
+def implied_p_from_american(o):
+    try: o = float(o)
+    except: return np.nan
+    if o > 0:  return 100.0/(o+100.0)
+    if o < 0:  return abs(o)/(abs(o)+100.0)
+    return np.nan
+
+def ev_per_dollar(odds_american, p):
+    if pd.isna(odds_american) or pd.isna(p): return np.nan
+    o = float(odds_american)
+    b = (o/100.0) if o > 0 else (100.0/abs(o)) if o < 0 else np.nan
+    if not np.isfinite(b) or b <= 0: return np.nan
+    return p*b - (1.0 - p)
+
+def _first_col(df: pd.DataFrame, cands: tuple[str, ...]) -> str | None:
+    lower = {c.lower(): c for c in df.columns}
+    for c in cands:
+        if c in lower: return lower[c]
+    return None
+
+def normalize_edges(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Uniform columns: odds_std, p_win_std, line_std, book_std, game_id_std, market, side, ev_std."""
+    if df is None or df.empty: return df.copy(), {"rows_total": 0, "rows_with_odds": 0, "rows_with_p": 0, "rows_pos_ev": 0}
+    w = df.copy()
+    w.rename(columns={c: c.lower().strip() for c in w.columns}, inplace=True)
+
+    oc = _first_col(w, ALT_ODDS)
+    pc = _first_col(w, ALT_PWIN)
+    lc = _first_col(w, ALT_LINE)
+    bc = _first_col(w, ALT_BOOK)
+    gc = _first_col(w, ALT_GAME)
+    mc = _first_col(w, ALT_MKT)
+
+    for c in [oc, pc, lc]:
+        if c: w[c] = pd.to_numeric(w[c], errors="coerce")
+
+    w["odds_std"]    = w[oc] if oc else np.nan
+    w["p_win_std"]   = w[pc] if pc else np.nan
+    w["line_std"]    = w[lc] if lc else np.nan
+    w["book_std"]    = w[bc] if bc else ""
+    w["game_id_std"] = w[gc] if gc else ""
+    w["market"]      = w[mc] if mc else w.get("market","")
+    w["side"]        = w.get("side", w.get("selection",""))
+
+    # p_win fallback from odds if missing
+    need = ~pd.to_numeric(w["p_win_std"], errors="coerce").notna()
+    if oc:
+        w.loc[need, "p_win_std"] = w.loc[need, "odds_std"].apply(implied_p_from_american)
+
+    w["ev_std"] = w.apply(lambda r: ev_per_dollar(r.get("odds_std"), r.get("p_win_std")), axis=1)
+
+    diag = {
+        "rows_total": len(w),
+        "rows_with_odds": int(w["odds_std"].notna().sum()),
+        "rows_with_p": int(pd.to_numeric(w["p_win_std"], errors="coerce").notna().sum()),
+        "rows_pos_ev": int((pd.to_numeric(w["ev_std"], errors="coerce") >= 0).sum()),
+    }
+    return w, diag
+

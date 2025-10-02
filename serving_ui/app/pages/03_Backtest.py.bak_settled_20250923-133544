@@ -1,0 +1,520 @@
+from __future__ import annotations
+
+# ---------- loader import shim ----------
+import os, sys
+_HERE = os.path.dirname(__file__)
+_APP_ROOT = os.path.abspath(os.path.join(_HERE, ".."))  # pages -> app
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
+try:
+    from util.loader_scores import load_edges_or_scores
+except Exception:
+    _ALT_ROOT = os.path.abspath(os.path.join(_APP_ROOT, ".."))
+    if _ALT_ROOT not in sys.path:
+        sys.path.insert(0, _ALT_ROOT)
+    from app.util.loader_scores import load_edges_or_scores
+# ---------------------------------------
+
+import re
+from pathlib import Path
+from typing import Iterable, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+from datetime import datetime
+import streamlit as st
+
+st.set_page_config(page_title="Backtest", layout="wide")
+
+# ------------------------ Page Config ------------------------
+MAX_LEGS_PER_SLIP = 6
+MIN_SEASON = 2017
+PARLAY_GROUP_CANDIDATES = ["slip_id", "parlay_id", "ticket_id", "bet_id", "wager_id", "group_id"]
+TS_CANDIDATES = ["sort_ts", "ts", "placed_at", "event_ts", "game_ts", "kickoff", "datetime", "date", "start_time", "scheduled"]
+
+PHASE_PRESEASON = "preseason"
+PHASE_REGULAR   = "regular"
+PHASE_POST      = "postseason"
+PHASE_HOF       = "hof"
+PHASE_BYE       = "bye"
+PHASE_CANCEL    = "cancelled"
+PHASE_UNKNOWN   = "unknown"
+WEEK_RX = re.compile(r"\bweek\s*(\d+)\b", flags=re.I)
+
+
+# ------------------------ FS Helpers ------------------------
+def _find_edges_csv() -> Path:
+    env = os.environ.get("EDGES_CSV")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+    here = Path(__file__).resolve()
+    for base in [here.parent, *here.parents]:
+        candidate = base / "exports" / "edges.csv"
+        if candidate.exists():
+            return candidate
+    return here.parents[3] / "exports" / "edges.csv"
+
+EDGES_CSV = _find_edges_csv()
+
+def read_csv_safe(path: Path | str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    for kw in ({"encoding": "utf-8-sig"}, {}, {"engine": "python"}):
+        try:
+            return pd.read_csv(p, **kw)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+# ------------------------ Normalization ------------------------
+def normalize_week_label(label: str) -> tuple[Optional[int], str]:
+    if label is None:
+        return None, PHASE_UNKNOWN
+    s = str(label).strip()
+    u = s.upper()
+    if u.startswith("BYE"): return None, PHASE_BYE
+    if "CANCEL" in u: return None, PHASE_CANCEL
+    if "HALL" in u: return 0, PHASE_HOF
+    if "PRESEASON" in u:
+        m = WEEK_RX.search(s); return (int(m.group(1)) if m else None), PHASE_PRESEASON
+    if any(k in u for k in ["WILD", "DIVIS", "CONF", "SUPER", "PLAYOFF"]):
+        m = WEEK_RX.search(s); return (int(m.group(1)) if m else None), PHASE_POST
+    m = WEEK_RX.search(s)
+    if m: return int(m.group(1)), PHASE_REGULAR
+    return None, PHASE_UNKNOWN
+
+
+def am_to_dec(american) -> Optional[float]:
+    try:
+        a = float(american)
+    except Exception:
+        return None
+    if a == 0: return None
+    return 1.0 + (a / 100.0 if a > 0 else 100.0 / abs(a))
+
+
+def compute_row_profit(row: pd.Series, use_parlay_first: bool = True) -> tuple[float, float]:
+    stake = float(row.get("stake") or 1.0)
+    if use_parlay_first and not pd.isna(row.get("parlay_stake")):
+        stake = float(row.get("parlay_stake") or stake)
+    dec = am_to_dec(row.get("odds"))
+    res = str(row.get("result") or "").lower()
+    if dec is None or pd.isna(dec): return stake, 0.0
+    if res == "win":  return stake, stake * (dec - 1.0)
+    if res == "lose": return stake, -stake
+    if res == "push": return stake, 0.0
+    return stake, 0.0
+
+
+def _combined_decimal_odds(group: pd.DataFrame) -> Optional[float]:
+    decs = []
+    for _, r in group.iterrows():
+        d = am_to_dec(r.get("odds"))
+        if d is None or pd.isna(d): return None
+        decs.append(float(d))
+    prod = 1.0
+    for d in decs: prod *= d
+    return prod
+
+
+def _parlay_result(group: pd.DataFrame) -> str:
+    res = group["result"].astype(str).str.lower().fillna("")
+    if (res == "lose").any(): return "lose"
+    if (res == "win").all() and len(res) > 0: return "win"
+    if (res == "push").any(): return "push"
+    return ""
+
+
+def compute_parlay_row_profit(row: pd.Series) -> tuple[float, float]:
+    stake = float(row.get("parlay_stake") or 1.0)
+    dec   = row.get("dec_comb")
+    res   = str(row.get("result") or "").lower()
+    if dec is None or pd.isna(dec): return stake, 0.0
+    if res == "win":  return stake, stake * (float(dec) - 1.0)
+    if res == "lose": return stake, -stake
+    if res == "push": return stake, 0.0
+    return stake, 0.0
+
+
+def load_edges() -> pd.DataFrame:
+    df = read_csv_safe(EDGES_CSV)
+    if df.empty: return df
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # Ensure core columns exist
+    core = ["ts","sort_ts","sport","league","season","week","market","ref","side",
+            "line","odds","p_win","ev","result","stake","parlay_stake","game_id"]
+    for c in core:
+        if c not in df.columns: df[c] = None
+
+    df["sort_ts"] = pd.to_datetime(df["sort_ts"], errors="coerce", utc=True).dt.tz_localize(None)
+if df["sort_ts"].isna().all() and "ts" in df.columns:
+    df["sort_ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True).dt.tz_localize(None)
+
+    df["season"]       = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+    df["result"]       = df["result"].astype(str).str.lower().str.strip()
+    df["odds"]         = pd.to_numeric(df["odds"], errors="coerce")
+    df["p_win"]        = pd.to_numeric(df["p_win"], errors="coerce")
+    df["ev"]           = pd.to_numeric(df["ev"], errors="coerce")
+    df["stake"]        = pd.to_numeric(df["stake"], errors="coerce")
+    df["parlay_stake"] = pd.to_numeric(df["parlay_stake"], errors="coerce")
+
+    wk = df["week"].map(normalize_week_label)
+    df["week_num"] = wk.map(lambda x: x[0] if isinstance(x, tuple) else None)
+    df["phase"]    = wk.map(lambda x: x[1] if isinstance(x, tuple) else PHASE_UNKNOWN)
+    return df
+
+
+def seasons_from_df(df: pd.DataFrame) -> list[int]:
+    vals = pd.to_numeric(df["season"], errors="coerce").dropna().astype(int).tolist()
+    return sorted({s for s in vals if s >= MIN_SEASON})
+
+
+def ensure_sort_ts(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return df
+    if "sort_ts" in df.columns and pd.to_datetime(df["sort_ts"], errors="coerce").notna().any():
+        out = df.copy(); out["sort_ts"] = pd.to_datetime(out["sort_ts"], errors="coerce"); return out
+    s = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    for c in TS_CANDIDATES:
+        if c in df.columns:
+            s = s.fillna(pd.to_datetime(df[c], errors="coerce"))
+    out = df.copy()
+    base = pd.Timestamp.utcnow().tz_localize(None)
+    out["sort_ts"] = s.fillna(base) + pd.to_timedelta(np.arange(len(out)), unit="s")
+    out["sort_ts"] = pd.to_datetime(out["sort_ts"], errors="coerce").dt.tz_localize(None)return out
+
+
+# ------------------------ Parlay Grouping ------------------------
+def ensure_parlay_grouping(df: pd.DataFrame, parlay_mode: bool) -> Tuple[pd.DataFrame, Optional[str], bool]:
+    if df is None or df.empty: return df, None, False
+    for c in PARLAY_GROUP_CANDIDATES:
+        if c in df.columns and df[c].notna().any():
+            return df, c, parlay_mode
+    if not parlay_mode: return df, None, False
+
+    out = df.copy()
+    ts_series = pd.to_datetime(out.get("ts", out.get("sort_ts")), errors="coerce")
+    if ts_series.notna().any():
+        seasonish = pd.to_numeric(out.get("season"), errors="coerce").fillna(ts_series.dt.year).astype(int)
+        if "week_num" in out.columns and pd.to_numeric(out["week_num"], errors="coerce").notna().any():
+            weekish = pd.to_numeric(out["week_num"], errors="coerce").fillna(ts_series.dt.isocalendar().week).astype(int)
+        else:
+            weekish = ts_series.dt.isocalendar().week.astype(int)
+        ts_s = ts_series.dt.floor("s")
+        ref_key = out["ref"].astype(str) if "ref" in out.columns else ""
+        grp_cols = pd.DataFrame({"_ref": ref_key, "_season": seasonish, "_week": weekish, "_tss": ts_s})
+        chunk_idx = grp_cols.groupby(["_ref","_season","_week","_tss"]).cumcount() // int(globals().get("MAX_LEGS_PER_SLIP", 6))
+        slip_key = (
+            grp_cols["_ref"].astype(str) + "|" +
+            grp_cols["_season"].astype(str) + "|" +
+            grp_cols["_week"].astype(str) + "|" +
+            grp_cols["_tss"].astype("int64").astype(str) + "|" +
+            chunk_idx.astype(str)
+        )
+        out["slip_id"] = pd.util.hash_pandas_object(slip_key, index=False).astype("int64").abs().astype(str).str[-12:]
+        return out, "slip_id", True
+
+    if "game_id" in out.columns and out["game_id"].notna().any():
+        out["slip_id"] = out["game_id"].astype(str); return out, "slip_id", True
+    out["slip_id"] = np.arange(len(out)); return out, "slip_id", True
+
+
+def legs_to_parlays(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    key = None
+    for k in ("parlay_id","slip_id","ticket_id","bet_id"):
+        if k in df.columns: key = k; break
+    if key is None: return pd.DataFrame()
+
+    groups = []
+    for pid, g in df.groupby(key, dropna=False):
+        pstake = pd.to_numeric(g.get("parlay_stake"), errors="coerce").dropna()
+        stake = float(pstake.iloc[0]) if not pstake.empty else float(
+            pd.to_numeric(g.get("stake"), errors="coerce").dropna().iloc[0] if pd.to_numeric(g.get("stake"), errors="coerce").notna().any() else 1.0
+        )
+        dec = _combined_decimal_odds(g)
+        result = _parlay_result(g)
+        sort_ts = pd.to_datetime(g["sort_ts"], errors="coerce").min()
+        season  = pd.to_numeric(g.get("season"), errors="coerce").dropna().astype(int)
+        season  = int(season.iloc[0]) if not season.empty else None
+        groups.append(dict(
+            sort_ts=sort_ts, season=season, market="PARLAY", ref=str(pid),
+            odds=None, dec_comb=dec, parlay_stake=stake, result=result, legs=len(g),
+            stake=None, p_win=None, ev=None, ts=sort_ts
+        ))
+    return pd.DataFrame(groups)
+
+
+# ------------------------ Analytics ------------------------
+def equity_curve(work: pd.DataFrame, starting_bankroll: float = 100.0, use_parlay_first: bool = True) -> pd.DataFrame:
+    if work is None or work.empty:
+        return pd.DataFrame({"ts": [], "equity": []})
+    W = work.sort_values("sort_ts", ascending=True, na_position="last").copy()
+    running = float(starting_bankroll); eq = []
+    for _, r in W.iterrows():
+        stake, pnl = compute_parlay_row_profit(r) if st.session_state.get("bk_mode_parlay", False) \
+            else compute_row_profit(r, use_parlay_first=use_parlay_first)
+        running += pnl; eq.append(running)
+    return pd.DataFrame({"ts": W["sort_ts"].values, "equity": eq})
+
+
+def max_drawdown(equity_series: Iterable[float]) -> Tuple[float, float, float]:
+    max_dd = 0.0; peak = -np.inf; trough = -np.inf; run_peak = -np.inf
+    for v in equity_series:
+        run_peak = max(run_peak, v)
+        dd = run_peak - v
+        if dd > max_dd:
+            max_dd = dd; peak = run_peak; trough = v
+    return float(max_dd), float(peak if peak != -np.inf else 0.0), float(trough if trough != -np.inf else 0.0)
+
+
+def summarize(work: pd.DataFrame, use_parlay_first: bool = True) -> dict:
+    if work is None or len(work) == 0:
+        return dict(total_bets=0, wins=0, losses=0, pushes=0, win_pct=0.0,
+                    avg_ev=np.nan, total_stake=0.0, total_profit=0.0, roi=0.0,
+                    max_drawdown=0.0, peak_equity=0.0, final_equity=0.0)
+    if "result" not in work.columns:
+        work = work.assign(result=np.nan)
+    if "sort_ts" not in work.columns:
+        work = work.assign(sort_ts=pd.NaT)
+
+    res = work["result"].astype(str).str.lower()
+    total_bets = len(work)
+    wins   = int((res == "win").sum())
+    losses = int((res == "lose").sum())
+    pushes = int((res == "push").sum())
+
+    stakes, profits = [], []
+    for _, r in work.iterrows():
+        s, p = (compute_parlay_row_profit(r) if st.session_state.get("bk_mode_parlay", False)
+                else compute_row_profit(r, use_parlay_first=use_parlay_first))
+        stakes.append(float(s)); profits.append(float(p))
+    total_stake  = float(sum(stakes)) if stakes else 0.0
+    total_profit = float(sum(profits)) if profits else 0.0
+    win_pct = (wins / total_bets) if total_bets else 0.0
+    roi     = (total_profit / total_stake) if total_stake > 0 else 0.0
+    avg_ev  = float(pd.to_numeric(work.get("ev"), errors="coerce").dropna().mean()) if "ev" in work.columns else np.nan
+
+    eq = equity_curve(work, starting_bankroll=0.0, use_parlay_first=use_parlay_first)
+    max_dd, peak_eq, final_eq = 0.0, 0.0, 0.0
+    if not eq.empty:
+        md, pk, _ = max_drawdown(eq["equity"].tolist())
+        max_dd, peak_eq = float(md), float(pk)
+        final_eq = float(eq["equity"].iloc[-1])
+
+    return dict(
+        total_bets=total_bets, wins=wins, losses=losses, pushes=pushes,
+        win_pct=win_pct, avg_ev=avg_ev,
+        total_stake=total_stake, total_profit=total_profit, roi=roi,
+        max_drawdown=max_dd, peak_equity=peak_eq, final_equity=final_eq,
+    )
+
+
+def build_near_misses(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    legs = df.copy()
+    legs["result"] = legs.get("result", "").astype(str).str.lower()
+    legs = legs[legs["result"].isin(["win","lose","push"])]
+    legs, key, _ = ensure_parlay_grouping(legs, parlay_mode=True)
+    if key is None: return pd.DataFrame()
+
+    out = []
+    for pid, g in legs.groupby(key, dropna=False):
+        res = g["result"].astype(str).str.lower().fillna("")
+        loses = int((res == "lose").sum()); wins  = int((res == "win").sum()); total = int(len(g))
+        if total >= 2 and loses == 1 and wins >= 1:
+            first_ts = pd.to_datetime(g["sort_ts"], errors="coerce").min()
+            season   = pd.to_numeric(g.get("season"), errors="coerce").dropna().astype(int)
+            out.append(dict(
+                parlay_id=str(pid), legs=total, lost_legs=loses, won_legs=wins,
+                season=(int(season.iloc[0]) if not season.empty else None), sort_ts=first_ts
+            ))
+    if not out: return pd.DataFrame()
+    return pd.DataFrame(out).sort_values("sort_ts", ascending=False, na_position="last")
+
+
+# ------------------------ UI ------------------------
+def main():
+    st.title("Backtest")
+tab_overview, tab_advanced = st.tabs(['Overview','Advanced'])
+
+with tab_overview:
+    
+col1, col2, col3 = st.columns([1,1,1])
+with col1:
+    if st.button('All Seasons', key='bk_btn_all_seasons'):
+        st.session_state['bk_season'] = 'ALL'
+with col2:
+    if st.button('Current Season', key='bk_btn_curr_season'):
+        st.session_state['bk_season'] = _default_season
+with col3:
+    if st.button('Clear / Reset', key='bk_btn_reset'):
+        for k in ['bk_bankroll','bk_kelly','bk_mode_parlay','bk_use_parlay_first','bk_season','bk_week']:
+            if k in st.session_state: del st.session_state[k]
+        st.rerun()
+st.caption('Quick run with sane defaults. Use Advanced for filters.')
+
+with tab_advanced:
+    # (Existing advanced controls remain here; this placeholder ensures tab exists.)
+    st.caption('Advanced filters / debug views')
+# ==== Edge Finder sane defaults ====
+if 'bk_bankroll' not in st.session_state: st.session_state['bk_bankroll'] = 1000.0
+if 'bk_kelly' not in st.session_state:    st.session_state['bk_kelly']    = 0.25
+if 'bk_mode_parlay' not in st.session_state: st.session_state['bk_mode_parlay'] = False
+if 'bk_use_parlay_first' not in st.session_state: st.session_state['bk_use_parlay_first'] = False
+# season/week defaults
+_now = datetime.now()
+_default_season = _now.year
+if 'bk_season' not in st.session_state: st.session_state['bk_season'] = _default_season
+if 'bk_week' not in st.session_state:   st.session_state['bk_week']   = 1
+# ===================================
+
+    # load via util (prefers parlay_scores.csv if present)
+    edges, _src = load_edges_or_scores()
+
+    if edges.empty:
+        # fall back to raw edges.csv if util returned nothing
+        edges = load_edges()
+
+    if edges.empty:
+        st.info(f"No edges found at: {EDGES_CSV}")
+        st.stop()
+
+    # Defaults
+    st.session_state.setdefault("bk_start_bankroll", 100.0)
+    st.session_state.setdefault("bk_newest_first", True)
+    st.session_state.setdefault("bk_use_parlay_first", True)
+    st.session_state.setdefault("bk_mode_parlay", False)
+    st.session_state.setdefault("bk_only_settled", False)
+
+    # Filters row
+    colA, colB, colC, colD = st.columns([3, 3, 1.6, 1.8])
+
+    # Seasons
+    with colA:
+        st.caption("Seasons")
+        season_opts = seasons_from_df(edges) or [MIN_SEASON]
+        default_seasons = season_opts[-1:]
+        sel_seasons = st.multiselect("Choose seasons", season_opts, default=default_seasons, label_visibility="collapsed")
+
+    # Weeks (normalized)
+    with colB:
+        st.caption("Weeks (optional)")
+        if sel_seasons:
+            wk_df = edges[edges["season"].isin(sel_seasons)]
+        else:
+            wk_df = edges
+        week_options = sorted(wk_df["week"].dropna().astype(str).unique().tolist())
+        sel_weeks = st.multiselect("Choose weeks", ["All"] + week_options, default=["All"], label_visibility="collapsed")
+
+    with colC:
+        st.caption("Starting bankroll (units)")
+        st.session_state["bk_start_bankroll"] = st.number_input(
+            "Starting bankroll", min_value=0.0, value=float(st.session_state["bk_start_bankroll"]),
+            step=10.0, label_visibility="collapsed"
+        )
+        st.checkbox("Use parlay stake first", value=st.session_state["bk_use_parlay_first"], key="bk_use_parlay_first")
+
+    with colD:
+        st.caption("Newest first / Parlay mode")
+        st.toggle("Newest first", value=st.session_state["bk_newest_first"], key="bk_newest_first", label_visibility="collapsed")
+        st.toggle('Parlay mode', key='bk_mode_parlay')
+        run_bt = st.button("Run Backtest", use_container_width=True)
+
+    # Apply filters
+    base = edges.copy()
+    if sel_seasons:
+        base = base[base["season"].isin(sel_seasons)]
+
+    if sel_weeks and "All" not in sel_weeks:
+        base = base[base["week"].astype(str).isin([str(w) for w in sel_weeks])]
+
+    # Settled only — prefer __settled if present, else fall back to result
+    if st.session_state.get("bk_only_settled", True):
+        if "__settled" in base.columns:
+            base = base[base["__settled"]]
+        elif "result" in base.columns:
+            rescol = base["result"].astype(str).str.lower()
+            base = base[rescol.isin(["win", "lose", "push"])]
+
+    # Build working set
+    is_parlay_ui = bool(st.session_state.get("bk_mode_parlay", False))
+    if is_parlay_ui:
+        base_grouped, group_col, _ = ensure_parlay_grouping(base, parlay_mode=True)
+        work = legs_to_parlays(ensure_sort_ts(base_grouped))
+        if work.empty:
+            st.warning("Parlay mode ON but no grouping fields found; using singles for this run.", icon="⚠️")
+            work = ensure_sort_ts(base)
+    else:
+        work = ensure_sort_ts(base)
+
+    st.caption(
+        f"Rows: raw={len(edges):,} | after season={len(edges[edges['season'].isin(sel_seasons)]) if sel_seasons else len(edges):,} "
+        f"| after week={len(base):,} | after settled={len(base):,} | final work={len(work):,}"
+    )
+
+    if not run_bt:
+        st.info("Adjust filters, then press **Run Backtest**.")
+        st.stop()
+
+    # Summary metrics
+    stats = summarize(work, use_parlay_first=st.session_state["bk_use_parlay_first"])
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Total Bets", f"{stats['total_bets']:,}")
+    m2.metric("Wins / Losses / Pushes", f"{stats['wins']:,} / {stats['losses']:,} / {stats['pushes']:,}")
+    m3.metric("Win %", f"{(stats['win_pct']*100):.1f}%")
+    m4.metric("Avg EV", "-" if np.isnan(stats["avg_ev"]) else f"{stats['avg_ev']:.3f}")
+    m5.metric("Stake Σ (units)", f"{stats['total_stake']:.2f}")
+    m6.metric("Profit (units)", f"{stats['total_profit']:.2f}")
+
+    m7, m8, m9 = st.columns(3)
+    m7.metric("ROI", f"{(stats['roi']*100):.2f}%")
+    m8.metric("Max Drawdown (units)", f"{stats.get('max_drawdown', 0.0):.2f}")
+    m9.metric("Final Equity (units)", f"{stats.get('final_equity', 0.0) + float(st.session_state['bk_start_bankroll']):.2f}")
+
+    # Equity curve
+    st.subheader("Equity curve")
+    eq = equity_curve(work, starting_bankroll=float(st.session_state["bk_start_bankroll"]),
+                      use_parlay_first=st.session_state["bk_use_parlay_first"])
+    if eq.empty:
+        st.caption("No equity points to plot.")
+    else:
+        st.line_chart(eq.set_index("ts")["equity"])
+
+    # Near-misses
+    st.markdown("### Near-miss parlays (exactly one leg lost)")
+    near_df = build_near_misses(base)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Near-miss count", int(near_df.shape[0]) if not near_df.empty else 0)
+    total_parlays = int(near_df["parlay_id"].nunique()) if not near_df.empty else 0
+    col2.metric("Total parlays", total_parlays)
+    rate = (near_df.shape[0] / total_parlays * 100.0) if total_parlays else 0.0
+    col3.metric("Near-miss rate", f"{rate:.2f}%")
+    if not near_df.empty:
+        st.dataframe(near_df, use_container_width=True, height=340)
+        st.download_button("Download near_misses.csv", near_df.to_csv(index=False).encode("utf-8"),
+                           "near_misses.csv", "text/csv")
+    else:
+        st.caption("No near-miss parlays found (or grouping/result columns missing).")
+
+    # Edges preview + download
+    st.subheader("Edges preview")
+    st.dataframe(work, use_container_width=True, hide_index=True, height=420)
+    csv = work.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Download filtered picks.csv", data=csv, file_name="filtered_picks.csv", mime="text/csv")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+

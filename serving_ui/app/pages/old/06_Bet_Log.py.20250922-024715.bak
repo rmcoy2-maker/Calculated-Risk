@@ -1,0 +1,59 @@
+﻿# =========================
+
+
+res = bets["result"].astype(str).str.lower().fillna("")
+wins = (res == "win").sum()
+losses = (res == "loss").sum()
+pushes = (res == "push").sum()
+bets_ct = len(bets)
+
+
+total_stake = pd.to_numeric(bets["stake"], errors="coerce").fillna(0).sum()
+total_profit = pd.to_numeric(bets["profit"], errors="coerce").fillna(0).sum()
+roi = (total_profit / total_stake) if total_stake > 0 else None
+return dict(bets=bets_ct, wins=wins, losses=losses, pushes=pushes, roi=roi)
+
+
+
+
+def _equity_series(bets: pd.DataFrame, starting_bankroll: float = 100.0) -> pd.DataFrame:
+# Equity curve from explicit profit column; if empty defaults to 0.
+p = pd.to_numeric(bets.get("profit", 0), errors="coerce").fillna(0)
+equity = starting_bankroll + p.cumsum()
+out = pd.DataFrame({"ts": bets["sort_ts"], "equity": equity})
+out.set_index("ts", inplace=True)
+return out
+
+
+# -----------------------------
+# Build & render
+# -----------------------------
+
+
+bets_df = _build_betlog_dataframe()
+
+
+st.subheader("Summary")
+cols = st.columns(5)
+S = _summarize(bets_df)
+cols[0].metric("Bets", S["bets"])
+cols[1].metric("Wins", S["wins"])
+cols[2].metric("Losses", S["losses"])
+cols[3].metric("Pushes", S["pushes"])
+cols[4].metric("ROI", "-" if S["roi"] is None else f"{S['roi']*100:.1f}%")
+
+
+st.subheader("Bankroll equity and drawdown")
+start_bankroll = st.number_input("Starting bankroll (units)", min_value=0.0, value=100.0, step=1.0)
+if bets_df.empty:
+st.info("No bets found in bets_log.csv or parlays.csv")
+else:
+equity_df = _equity_series(bets_df, starting_bankroll=start_bankroll)
+st.line_chart(equity_df, y="equity")
+
+
+st.caption("Equity uses the \"profit\" column; ROI uses total profit / total stake when available.")
+
+
+st.subheader("Filtered rows")
+st.dataframe(bets_df, use_container_width=True, hide_index=True)

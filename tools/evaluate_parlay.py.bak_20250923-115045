@@ -1,0 +1,157 @@
+import argparse, json, joblib
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_auc_score
+
+def make_time_split(df: pd.DataFrame):
+    # Prefer last season as validation if we have >=2 seasons
+    if "season" in df.columns:
+        seasons = pd.to_numeric(df["season"], errors="coerce").dropna().unique()
+        if len(seasons) >= 2:
+            last = np.nanmax(seasons)
+            tr = pd.to_numeric(df["season"], errors="coerce") < last
+            va = pd.to_numeric(df["season"], errors="coerce") == last
+            if tr.any() and va.any():
+                return tr, va
+    # Fallback: last ~20% by row order
+    n = len(df)
+    cut = max(1, int(n*0.8))
+    tr = pd.Series([True]*cut + [False]*(n-cut), index=df.index)
+    va = ~tr
+    return tr, va
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--edges", required=True)
+    ap.add_argument("--model-dir", required=True)
+    ap.add_argument("--out-prefix", default=None, help="Path prefix for eval CSVs (default: exports\\parlay_eval_*.csv)")
+    args = ap.parse_args()
+
+    model_dir = Path(args.model_dir)
+    edges_path = Path(args.edges)
+    out_prefix = Path(args.out_prefix) if args.out_prefix else edges_path.parent / "parlay_eval"
+
+    # Load model + meta
+    model = joblib.load(model_dir / "parlay_model.joblib")
+    meta_path = model_dir / "meta.json"
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    num_cols = meta.get("num_cols", []) or []
+    cat_cols = meta.get("cat_cols", []) or []
+
+    # Load edges, prep features
+    df = pd.read_csv(edges_path)
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # target (if present)
+    y = None
+    if "result" in df.columns:
+        s = df["result"].astype(str).str.strip().str.lower()
+        map_win  = {"win":1,"w":1,"1":1,"true":1,"t":1,"yes":1,"y":1}
+        map_lose = {"lose":0,"l":0,"0":0,"false":0,"f":0,"no":0,"n":0}
+        y = s.map({**map_win, **map_lose}).where(lambda v: v.isin([0,1]))
+
+    # ensure expected columns exist
+    for c in num_cols:
+        if c not in df.columns: df[c] = np.nan
+    for c in cat_cols:
+        if c not in df.columns: df[c] = ""
+
+    X = df[num_cols + cat_cols] if (num_cols or cat_cols) else df.copy()
+
+    # Predict
+    proba = model.predict_proba(X)[:,1]
+    df_out = df.copy()
+    df_out["parlay_score"] = proba
+
+    # Split
+    tr_idx, va_idx = make_time_split(df_out)
+
+    # AUCs (only if we have labels)
+    auc_train = auc_valid = None
+    if y is not None and y.notna().any():
+        try:
+            yt, yv = y[tr_idx].dropna(), y[va_idx].dropna()
+            pt, pv = df_out.loc[yt.index, "parlay_score"], df_out.loc[yv.index, "parlay_score"]
+            if len(np.unique(yt)) > 1:
+                auc_train = roc_auc_score(yt, pt)
+            if len(np.unique(yv)) > 1:
+                auc_valid = roc_auc_score(yv, pv)
+        except Exception:
+            pass
+
+    # Decile lift on validation (requires labels)
+    deciles = pd.DataFrame()
+    calib   = pd.DataFrame()
+    if y is not None and y.notna().any() and va_idx.any():
+        va = df_out.loc[va_idx].copy()
+        va["y"] = y[va_idx]
+        va = va.dropna(subset=["y"])
+
+        # rank by score, high->low
+        va = va.sort_values("parlay_score", ascending=False)
+        va["decile"] = pd.qcut(va["parlay_score"].rank(method="first", ascending=False), 10, labels=False) + 1  # 1..10
+
+        base = va["y"].mean() if len(va) else np.nan
+        deciles = va.groupby("decile").agg(
+            n=("y","size"),
+            win_rate=("y","mean"),
+            avg_score=("parlay_score","mean")
+        ).sort_index(ascending=True)
+        deciles["lift"] = deciles["win_rate"] / base if pd.notna(base) and base>0 else np.nan
+        deciles.index.name = "decile"
+        deciles.reset_index(inplace=True)
+
+        # calibration: 10 equal-width bins on [0,1]
+        bins = np.linspace(0,1,11)
+        va["calib_bin"] = pd.cut(va["parlay_score"], bins, include_lowest=True)
+        calib = va.groupby("calib_bin", observed=False).agg(
+            n=("y","size"),
+            avg_pred=("parlay_score","mean"),
+            emp_rate=("y","mean")
+        ).reset_index()
+
+    # Write outputs
+    out_dec = Path(str(out_prefix) + "_deciles.csv")
+    out_cal = Path(str(out_prefix) + "_calibration.csv")
+    if not deciles.empty: deciles.to_csv(out_dec, index=False)
+    if not calib.empty:   calib.to_csv(out_cal, index=False)
+
+    # Print summary
+    print("Eval summary:")
+    print(f"  Train AUC: {auc_train:.3f}" if auc_train is not None else "  Train AUC: n/a")
+    print(f"  Valid AUC: {auc_valid:.3f}" if auc_valid is not None else "  Valid AUC: n/a")
+    if not deciles.empty:
+        top = deciles.loc[deciles["decile"]==1]
+        wr = float(top["win_rate"].iloc[0])
+        lf = float(top["lift"].iloc[0])
+        print(f"  Top decile win_rate={wr:.3f}, lift={lf:.2f}")
+        print(f"  Wrote {out_dec}")
+    if not calib.empty:
+        print(f"  Wrote {out_cal}")
+
+if __name__ == "__main__":
+    main()
+import re
+
+def _coerce_numeric_expected(pipe, df):
+    """
+    Find numeric columns from the fitted ColumnTransformer inside the pipeline and coerce them to numeric.
+    This prevents median-imputer crashes when a 'numeric' feature has stray strings.
+    """
+    try:
+        pre = pipe.named_steps.get("pre") or pipe.named_steps.get("ct")
+    except Exception:
+        pre = None
+    num_cols = []
+    if pre is not None and hasattr(pre, "transformers_"):
+        for name, trans, cols in pre.transformers_:
+            # common names for numeric block
+            if name in ("num", "numeric", "num_pipe"):
+                num_cols = list(cols)
+                break
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df

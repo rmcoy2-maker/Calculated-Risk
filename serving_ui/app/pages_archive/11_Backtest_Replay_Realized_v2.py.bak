@@ -1,0 +1,75 @@
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+from serving_ui.app._layout import header
+from app.lib.odds_utils import american_to_decimal, american_to_implied, kelly_fraction
+
+header("Backtest Replay (Realized vs Expected)")
+
+def _find_edges_csv():
+    here = Path(__file__).resolve()
+    root = here.parents[2]
+    for p in [root/"exports/edges.csv", root/"data_scaffnew/exports/edges.csv"]:
+        if p.exists() and p.stat().st_size > 0: return p
+    return None
+
+p = _find_edges_csv()
+if not p:
+    st.warning("edges.csv not found.")
+    st.stop()
+
+df = pd.read_csv(p)
+df.columns = [c.strip().lower() for c in df.columns]
+need = {"odds","model_p"}
+if not need.issubset(df.columns):
+    st.error("Require columns: odds, model_p")
+    st.stop()
+
+# optional realized result column: 'outcome' (1 win, 0 loss; push/void -> 0)
+has_real = "outcome" in df.columns
+
+st.subheader("Settings")
+start_bankroll = st.number_input("Starting bankroll ($)", value=1000.0, min_value=0.0, step=50.0)
+kelly_mult = st.slider("Kelly fraction", 0.0, 1.0, 0.5, 0.05)
+cap_pct = st.slider("Stake cap (% bankroll)", 0.5, 20.0, 5.0, 0.5)/100.0
+ev_floor = st.slider("Min +EV (pp)", -5.0, 20.0, 0.0, 0.5)
+mode = st.radio("Replay mode", ["Expected EV", "Realized Outcomes" if has_real else "Expected EV"], index=0)
+
+def implied_pp(odds:int)->float: 
+    dec = 1 + (odds/100.0 if odds>0 else 100.0/abs(odds))
+    return 1.0/dec
+
+if {"odds","model_p"}.issubset(df.columns):
+    df["ev_pp"] = (df["model_p"] - df["odds"].astype(int).map(implied_pp))*100.0
+    df = df[df["ev_pp"] >= ev_floor]
+
+# order by time if present
+sort_cols = [c for c in ["ts","season","week"] if c in df.columns]
+df = df.sort_values(sort_cols if sort_cols else df.columns.tolist()).reset_index(drop=True)
+
+bank = start_bankroll
+curve = []
+for _, r in df.iterrows():
+    p = float(r["model_p"])
+    odds = int(r["odds"])
+    k = kelly_fraction(p, odds) * kelly_mult
+    stake = bank * min(cap_pct, max(0.0, k))
+    dec = american_to_decimal(odds)
+    if mode.startswith("Realized") and has_real:
+        y = float(r["outcome"])
+        delta = stake*(y*(dec-1.0) - (1.0-y))
+    else:
+        delta = stake*(p*(dec-1.0) - (1.0-p))
+    bank += delta
+    curve.append(bank)
+
+st.subheader("Results")
+st.metric("Ending bankroll", f"${bank:,.2f}")
+st.line_chart(curve, height=240)
+st.caption("Use `outcome` in edges.csv for realized replay; otherwise EV replay.")
+
+
+
+
+

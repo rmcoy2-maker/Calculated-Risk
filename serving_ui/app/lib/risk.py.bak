@@ -1,0 +1,44 @@
+import numpy as np
+import pandas as pd
+
+def to_num(s):
+    return pd.to_numeric(s, errors="coerce")
+
+def bankroll_curve_from_log(df: pd.DataFrame, start_bankroll: float = 1000.0) -> pd.DataFrame:
+    d = df.copy()
+    d.columns = [c.strip().lower() for c in d.columns]
+    d = d[~d.get("result","").astype(str).str.lower().isin(["","open"])].copy()
+    if "ts" in d.columns:
+        d["ts"] = pd.to_datetime(d["ts"], errors="coerce", utc=True)
+        d = d.sort_values("ts")
+    d["profit"] = to_num(d.get("payout", 0.0)).fillna(0.0)
+    d["cum_profit"] = d["profit"].cumsum()
+    d["bankroll"] = start_bankroll + d["cum_profit"]
+    return d
+
+def max_drawdown(series: pd.Series) -> float:
+    """Returns max drawdown (negative number)."""
+    x = series.astype(float).values
+    peak = np.maximum.accumulate(x)
+    dd = (x - peak)
+    return float(dd.min() if len(dd) else 0.0)
+
+def volatility(series: pd.Series) -> float:
+    """Daily-ish volatility based on consecutive returns delta of bankroll."""
+    if len(series) < 2: return 0.0
+    ret = np.diff(series.astype(float).values) / series.shift(1).fillna(method="bfill").astype(float).values[1:]
+    return float(np.nanstd(ret))
+
+def sharpe_like(series: pd.Series, rf: float = 0.0) -> float:
+    """Simple Sharpe-like: mean(ret - rf) / std(ret) on bankroll curve."""
+    if len(series) < 2: return 0.0
+    prev = series.shift(1).fillna(method="bfill").astype(float)
+    ret = (series.astype(float) - prev) / prev
+    ex = ret - rf
+    s = float(np.nanstd(ret))
+    return float(np.nanmean(ex) / s) if s > 0 else 0.0
+
+
+
+
+

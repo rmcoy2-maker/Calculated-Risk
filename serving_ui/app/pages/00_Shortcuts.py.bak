@@ -1,0 +1,174 @@
+from __future__ import annotations
+import streamlit as st
+# --- import bootstrap so 'app' package is importable when run from anywhere ---
+import sys
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+# file: .../serving_ui/app/pages/<page>.py  -> parents[2] = .../serving_ui
+_SERVING_UI = _HERE.parents[2]
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+# -----------------------------------------------------------------------------import streamlit as st
+st.set_page_config(page_title='00 Shortcuts', page_icon='📈', layout='wide')
+
+import streamlit as st
+
+import streamlit as st
+
+
+import streamlit as st
+
+# --- diagnostics import (robust) ---
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        # add repo/serving_ui to sys.path so 'app' is importable
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            # fallback if pages run with CWD=app
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+            def mount_in_sidebar(page_name: str):
+                return None
+# --- /diagnostics import (robust) ---
+# serving_ui/app/pages/00_Shortcuts.py
+
+import json
+from pathlib import Path
+from urllib.parse import urlparse
+
+import streamlit as st
+from lib.auth import login, show_logout
+
+st.title("🔗 Sportsbook Shortcuts")
+
+# -------------------- Auth --------------------
+auth = login()
+if not getattr(auth, "authenticated", False):
+    st.info("Please sign in to manage your shortcuts.")
+    st.stop()
+
+st.caption(f"Signed in as **{auth.name}** ({auth.role})")
+st.divider()
+
+# -------------------- Storage helpers --------------------
+def _storage_dir() -> Path:
+    """Directory for per-user shortcut JSON files."""
+    here = Path(__file__).resolve()
+    # app root (…/serving_ui/app)
+    app_root = here.parent.parent
+    d = app_root / "user_data" / "shortcuts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def _user_key() -> str:
+    # Use auth.name if present; fall back to a sanitized key
+    nm = str(getattr(auth, "name", "user")).strip() or "user"
+    safe = "".join(ch for ch in nm if ch.isalnum() or ch in ("-", "_")).strip("_")
+    return safe or "user"
+
+def _user_file() -> Path:
+    return _storage_dir() / f"{_user_key()}.json"
+
+def load_shortcuts() -> dict[str, str]:
+    p = _user_file()
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            # Corrupt file fallback -> start fresh
+            return {}
+    return {}
+
+def save_shortcuts(d: dict[str, str]) -> None:
+    p = _user_file()
+    p.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+
+def is_valid_https(url: str) -> bool:
+    try:
+        url = url.strip()
+        if not url.lower().startswith("https://"):
+            return False
+        parsed = urlparse(url)
+        return parsed.scheme == "https" and bool(parsed.netloc)
+    except Exception:
+        return False
+
+# -------------------- State init --------------------
+if "shortcuts" not in st.session_state:
+    st.session_state.shortcuts = load_shortcuts()
+
+# -------------------- UI: add new --------------------
+with st.form("add_shortcut", clear_on_submit=True):
+    st.subheader("Add a sportsbook shortcut")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        name = st.text_input("Book name", placeholder="DraftKings")
+    with c2:
+        url = st.text_input("Login URL (HTTPS)", placeholder="https://sportsbook.draftkings.com")
+    submitted = st.form_submit_button("Add shortcut")
+    if submitted:
+        name_clean = (name or "").strip()
+        url_clean = (url or "").strip()
+        if not name_clean:
+            st.error("Please enter a book name.")
+        elif not url_clean:
+            st.error("Please enter a URL.")
+        elif not is_valid_https(url_clean):
+            st.error("URL must be HTTPS and well-formed.")
+        else:
+            st.session_state.shortcuts[name_clean] = url_clean  # add/update
+            save_shortcuts(st.session_state.shortcuts)
+            st.success(f"Added/updated shortcut for **{name_clean}**.")
+
+st.divider()
+
+# -------------------- UI: list / manage --------------------
+st.subheader("Your shortcuts")
+if not st.session_state.shortcuts:
+    st.info("No shortcuts yet. Add one above!")
+else:
+    for i, (nm, link) in enumerate(sorted(st.session_state.shortcuts.items(), key=lambda kv: kv[0].lower())):
+        row = st.container()
+        with row:
+            c1, c2, c3 = st.columns([2, 4, 1])
+            with c1:
+                st.write(f"**{nm}**")
+            with c2:
+                # Prefer link button if available; fallback to markdown link
+                try:
+                    st.link_button(f"Open {nm}", link)
+                    st.caption(link)
+                except Exception:
+                    st.markdown(f"[Open {nm}]({link})")
+                    st.caption(link)
+            with c3:
+                if st.button("🗑️ Delete", key=f"del_{i}"):
+                    st.session_state.shortcuts.pop(nm, None)
+                    save_shortcuts(st.session_state.shortcuts)
+                    st.toast(f"Deleted {nm}", icon="🗑️")
+                    st.rerun()
+
+st.divider()
+with st.expander("Security notes", expanded=False):
+    st.markdown(
+        """
+- This page stores **only the shortcut name and HTTPS URL** locally for your account.
+- **No usernames or passwords** are collected or stored here.
+- Clicking a shortcut opens the sportsbook site/app where you log in **directly with them**.
+- For deeper integrations (e.g., auto-login), an **official OAuth/API** from the sportsbook would be required.
+        """.strip()
+    )
+
+show_logout()
+
+
+
+
+
+

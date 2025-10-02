@@ -1,0 +1,473 @@
+﻿# -*- coding: utf-8 -*-
+# --- auto-added: newest-first patch ---
+from __future__ import annotations
+try:
+    # Preferred absolute import (when 'app' is a proper package)
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        # Fallback if pages are executed such that relative path works
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+        # Final no-op guard
+        def __nfp_apply(_): 
+            return
+import streamlit as st  # ensure alias available
+__nfp_apply(st)
+# --- end auto-added ---
+from app.bootstrap import bootstrap_paths
+bootstrap_paths()
+
+
+from __future__ import annotations
+from pathlib import Path
+
+
+import sys, importlib.util, types, traceback
+
+
+import pandas as pd
+
+
+import streamlit as st
+
+
+
+
+
+# ---------- Streamlit ----------
+
+
+st.set_page_config(page_title="Hedge Finder", layout="wide")
+
+
+st.title("Hedge Finder")
+
+
+st.info("Heartbeat ✓ – page loaded")
+
+
+
+
+
+# ---------- Locate repo root ----------
+
+
+THIS = Path(__file__).resolve()
+
+
+ROOT = THIS
+
+
+while ROOT and not ((ROOT / "serving").exists() and (ROOT / "serving_ui").exists()):
+
+
+    parent = ROOT.parent
+
+
+    if parent == ROOT:
+
+
+        break
+
+
+    ROOT = parent
+
+
+
+
+
+if ROOT and str(ROOT) not in sys.path:
+
+
+    sys.path.insert(0, str(ROOT))
+
+
+
+
+
+# ---------- Import backend (package first, then direct-file fallback) ----------
+
+
+EXPORTS = ROOT / "exports"  # default fallback
+
+
+try:
+
+
+    from serving.hedge_finder import (
+
+
+        load_pool, build_candidates, write_out, append_log, EXPORTS as MODULE_EXPORTS
+
+
+    )
+
+
+    EXPORTS = MODULE_EXPORTS or EXPORTS
+
+
+    st.success("Import OK: serving.hedge_finder")
+
+
+except Exception as e:
+
+
+    st.warning(f"Package import failed: {e}\nTrying direct-file fallback …")
+
+
+    hf_path = ROOT / "serving" / "hedge_finder.py"
+
+
+    if not hf_path.exists():
+
+
+        alt = ROOT / "serving" / "Hedge_Finder.py"
+
+
+        if alt.exists():
+
+
+            hf_path = alt
+
+
+    if not hf_path.exists():
+
+
+        st.error(f"Could not find hedge_finder.py under {ROOT / 'serving'}")
+
+
+        st.code("sys.path:\n" + "\n".join(sys.path))
+
+
+        st.stop()
+
+
+
+
+
+    if "serving" not in sys.modules:
+
+
+        pkg = types.ModuleType("serving")
+
+
+        pkg.__path__ = [str(ROOT / "serving")]
+
+
+        sys.modules["serving"] = pkg
+
+
+
+
+
+    spec = importlib.util.spec_from_file_location("serving.hedge_finder", str(hf_path))
+
+
+    mod = importlib.util.module_from_spec(spec)
+
+
+    assert spec and spec.loader
+
+
+    spec.loader.exec_module(mod)
+
+
+
+
+
+    load_pool        = mod.load_pool
+
+
+    build_candidates = mod.build_candidates
+
+
+    write_out        = mod.write_out
+
+
+    append_log       = mod.append_log
+
+
+    EXPORTS          = getattr(mod, "EXPORTS", EXPORTS)
+
+
+    st.success(f"Loaded backend via fallback: {hf_path}")
+
+
+
+
+
+EXPORTS = Path(EXPORTS)
+
+
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+
+
+
+
+CANDS = EXPORTS / "hedge_candidates.csv"
+
+
+LOG   = EXPORTS / "bets_log.csv"
+
+
+
+
+
+# ---------- Sidebar ----------
+
+
+with st.sidebar:
+
+
+    st.subheader("Filters")
+
+
+    min_p  = st.slider("Min win probability", 0.40, 0.80, 0.55, 0.01)
+
+
+    min_ev = st.number_input("Min EV (if present)", value=0.00, step=0.05, format="%.2f")
+
+
+    allowed = st.multiselect("Allowed markets", ["ML","ATS","PROP"], default=["ML","ATS","PROP"])
+
+
+    low  = st.number_input("Min odds (+)", value=375, min_value=200, max_value=10000, step=25)
+
+
+    high = st.number_input("Max odds (+)", value=550, min_value=low, max_value=10000, step=25)
+
+
+    legs = st.multiselect("Legs", [3,4,5], default=[3,4,5])
+
+
+    topn = st.number_input("Top N", value=5, min_value=1, max_value=20, step=1)
+
+
+
+
+
+c1, c2 = st.columns([1, 1])
+
+
+run = c1.button("Build candidates")
+
+
+log_all = c2.button("Log ALL candidates")
+
+
+
+
+
+st.divider()
+
+
+
+
+
+# ---------- Actions ----------
+
+
+if run:
+
+
+    try:
+
+
+        pool = load_pool(min_p=min_p, min_ev=min_ev, allowed=tuple(allowed))
+
+
+        if pool.empty:
+
+
+            st.warning("No rows passed filters. Widen probability/EV or check newest exports.")
+
+
+        else:
+
+
+            cands = build_candidates(
+
+
+                pool,
+
+
+                target_low=int(low),
+
+
+                target_high=int(high),
+
+
+                legs_options=tuple(sorted(set(legs))),
+
+
+                top_n=int(topn),
+
+
+            )
+
+
+            write_out(cands)
+
+
+            st.success(f"Wrote {len(cands)} candidates → {CANDS.name}")
+
+
+    except Exception:
+
+
+        st.error("Error while building candidates:")
+
+
+        st.exception(traceback.format_exc())
+
+
+
+
+
+# ---------- Table + selective logging ----------
+
+
+if CANDS.exists():
+
+
+    try:
+
+
+        base = pd.read_csv(CANDS)
+
+
+        st.subheader("Candidates")
+
+
+
+
+
+        if base.empty:
+
+
+            st.info("No candidates for these filters.")
+
+
+        else:
+
+
+            show = [c for c in ["legs","american","p_combo","ev_est","legs_json"] if c in base.columns]
+
+
+            df_view = base[show].copy()
+
+
+            df_view.insert(0, "✓", False)
+
+
+
+
+
+            edited = st.data_editor(
+
+
+                df_view,
+
+
+                use_container_width=True,
+
+
+                key="hf_editor",
+
+
+                height=min(420, 100 + 38 * len(df_view)),
+
+
+            )
+
+
+
+
+
+            left, right = st.columns([1,2])
+
+
+            with left:
+
+
+                if st.button("Add selected to log"):
+
+
+                    picked = edited[edited["✓"]].drop(columns=["✓"])
+
+
+                    if picked.empty:
+
+
+                        st.warning("No rows selected.")
+
+
+                    else:
+
+
+                        to_log = pd.merge(picked, base, on=list(picked.columns), how="left")
+
+
+                        append_log(to_log.to_dict("records"), stake=5.0, tag="hedge_ui_pick")
+
+
+                        st.success(f"Logged {len(to_log)} selection(s) → {LOG.name}")
+
+
+
+
+
+            with right:
+
+
+                if log_all:
+
+
+                    append_log(base.to_dict("records"), stake=5.0, tag="hedge_ui_all")
+
+
+                    st.success(f"Logged {len(base)} candidates → {LOG.name}")
+
+
+
+
+
+        with st.expander("⚙️ Diagnostics", expanded=False):
+
+
+            st.write("EXPORTS:", EXPORTS)
+
+
+            st.write("CANDS:", CANDS)
+
+
+            st.dataframe(base.head(10), use_container_width=True)
+
+
+
+
+
+    except Exception:
+
+
+        st.error("Failed to render candidates:")
+
+
+        st.exception(traceback.format_exc())
+
+
+else:
+
+
+    st.info("No hedge_candidates.csv yet. Click “Build candidates”.")
+
+
+
+
+
+
+
+
+

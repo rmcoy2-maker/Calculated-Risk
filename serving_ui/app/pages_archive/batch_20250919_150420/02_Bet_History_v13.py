@@ -1,0 +1,40 @@
+import streamlit as st, pandas as pd
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+DB_DIR = ROOT / 'data_scaffnew' / 'db'
+EXPORTS = ROOT / 'data_scaffnew' / 'exports'
+st.title('Calculated History')
+live_p = DB_DIR / 'bets_log.csv'
+sim_p = DB_DIR / 'simulated_bets_log.csv'
+live2_p = EXPORTS / 'bets_log.csv'
+parlay_p = EXPORTS / 'parlays.csv'
+settled_p = EXPORTS / 'settled.csv'
+
+def read_csv(p):
+    return pd.read_csv(p) if p.exists() else pd.DataFrame()
+live = read_csv(live2_p)
+if live.empty:
+    live = read_csv(live_p)
+sim = read_csv(sim_p)
+parlays = read_csv(parlay_p)
+settled = read_csv(settled_p)
+for df, tag in [(live, 'live'), (sim, 'simulated')]:
+    if not df.empty and 'tag' not in df.columns:
+        df['tag'] = tag
+base = pd.concat([d for d in (live, sim) if not d.empty], ignore_index=True) if not live.empty or not sim.empty else pd.DataFrame()
+merged = base.copy()
+if not settled.empty:
+    key_cols = [c for c in ('game_id', 'ref', 'id') if c in base.columns and c in settled.columns]
+    if key_cols:
+        merged = merged.merge(settled, on=key_cols, how='left', suffixes=('', '_settled'))
+st.subheader('Singles')
+if merged.empty:
+    st.info('No bets yet. Run the edge scanner or the backtester.')
+else:
+    if 'result' in merged.columns:
+        merged['result'] = merged['result'].fillna('').astype(str).str.lower()
+        merged['result'] = merged['result'].map(lambda r: 'âœ… win' if r in ('win', 'won', 'w') else 'â\x9dŒ loss' if r in ('loss', 'lost', 'l') else r)
+    st.dataframe(merged.sort_values(merged.columns[0], ascending=False), width='stretch')
+if not parlays.empty:
+    st.subheader('Parlays')
+    st.dataframe(parlays, width='stretch')

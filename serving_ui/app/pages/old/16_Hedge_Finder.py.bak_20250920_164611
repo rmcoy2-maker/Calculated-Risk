@@ -1,0 +1,89 @@
+﻿# === boot: ensure repo root on sys.path ===
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]   # .../serving_ui/app
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+# === end boot ===# --- path bootstrap: allow `import app.*` from any page ---
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from app.utils.logger import log_error
+import streamlit as st  # ensure st is available in except
+try:
+    from app.utils.logger import log_error
+    
+    try:
+        from app.bootstrap import bootstrap_paths; bootstrap_paths()
+        
+        import streamlit as st
+        import pandas as pd
+        from pathlib import Path
+        
+        ROOT = Path(__file__).resolve().parents[2]
+        CANDS = ROOT / "exports" / "hedge_candidates.csv"
+        LOG   = ROOT / "exports" / "bets_log.csv"
+        
+        st.set_page_config(page_title="Calculated Risk Ã¢â‚¬â€ Hedge Finder", layout="wide")
+        st.title("Hedge Finder (3Ã¢â‚¬â€œ5 legs, prefers 3Ã¢â‚¬â€œ4)")
+        
+        st.caption("Scans picks/edges and proposes the Top 5 parlays within +375 to +550 that the model likes most.")
+        
+        c1,c2,c3 = st.columns([1,1,2])
+        with c1:
+            low = st.number_input("Min odds (+)", value=375, step=25, min_value=200, max_value=2000)
+        with c2:
+            high = st.number_input("Max odds (+)", value=550, step=25, min_value=low, max_value=5000)
+        with c3:
+            st.write(" ")
+        
+        run = st.button("Build candidates")
+        if run:
+            import subprocess, sys
+            cmd = [sys.executable, str(ROOT/"serving"/"hedge_finder.py"), "--low", str(int(low)), "--high", str(int(high)), "--top-n", "5"]
+            st.info("Running hedge_finder.py ...")
+            cp = subprocess.run(cmd, capture_output=True, text=True)
+            st.code(cp.stdout or "", language="bash")
+            if cp.stderr:
+                st.error(cp.stderr)
+        
+        if CANDS.exists():
+            df = pd.read_csv(CANDS)
+            st.subheader("Candidates")
+            if len(df)==0:
+                st.info("No candidates found for the current filters. Try widening the odds window.")
+            else:
+                st.dataframe(df[["legs","american","p_combo","ev_est","legs_json"]], use_container_width=True)
+                if st.button("Log all to bet history (beta-open)"):
+                    import subprocess, sys
+                    cmd = [sys.executable, str(ROOT/"serving"/"hedge_finder.py"), "--low", str(int(low)), "--high", str(int(high)), "--top-n", "5", "--log", "--stake", "5.0", "--tag", "hedge_ui"]
+                    cp = subprocess.run(cmd, capture_output=True, text=True)
+                    st.success(f"Logged to {LOG}")
+        else:
+            st.info("No hedge_candidates.csv yet. Click 'Build candidates'.")
+        
+    except Exception as e:
+        log_error(e, context=__file__)
+        st.error(f"Page error: {e}")
+except Exception as e:
+    # log to file
+    try:
+        log_error(e, context=__file__)
+    except Exception:
+        pass
+    # show in UI if possible, else print
+    try:
+        st.error(f"Page error: {e}")
+    except Exception:
+        print(f"Page error: {e}")
+
+
+
+
+

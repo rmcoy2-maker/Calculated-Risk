@@ -1,0 +1,176 @@
+import argparse, os, json, joblib
+import numpy as np
+import pandas as pd
+
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+from sklearn.dummy import DummyClassifier
+
+def load_edges(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    return df
+
+def coerce_numeric(df: pd.DataFrame, cols):
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = np.nan
+    return df
+
+def normalize_result_series(s: pd.Series) -> pd.Series:
+    s = s.astype(str).str.strip().str.lower()
+    map_win  = {"win":1,"w":1,"1":1,"true":1,"t":1,"yes":1,"y":1}
+    map_lose = {"lose":0,"l":0,"0":0,"false":0,"f":0,"no":0,"n":0}
+    return s.map({**map_win, **map_lose})
+
+def main():
+    ap = argparse.ArgumentParser(description="Train parlay propensity model from graded edges.")
+    ap.add_argument("--edges", required=True)
+    ap.add_argument("--out", required=True, help="Output dir for model artifacts")
+    ap.add_argument("--min-season", type=int, default=2017)
+    args = ap.parse_args()
+
+    os.makedirs(args.out, exist_ok=True)
+
+    # ---- load & filter ----
+    df = load_edges(args.edges)
+    if "season" in df.columns:
+        df["season"] = pd.to_numeric(df["season"], errors="coerce")
+        df = df[df["season"] >= args.min_season].copy()
+    if df.empty:
+        raise SystemExit("No rows after season filter. Ensure edges file has data.")
+
+    if "result" not in df.columns:
+        raise SystemExit("No 'result' column found. Run grader to create wins/losses.")
+    y_series = normalize_result_series(df["result"])
+    mask_valid = y_series.isin([0, 1])
+    df = df[mask_valid].copy()
+    y = y_series[mask_valid].astype(int)
+    if df.empty:
+        raise SystemExit("No trainable rows (only pushes/unknown).")
+
+    # ---- features ----
+    num_cols = ["odds","line","p_win","dec_comb","legs","parlay_stake","stake","week_num"]
+    cat_cols = ["market","ref","sport","league"]
+
+    df = coerce_numeric(df, num_cols)
+    for c in cat_cols:
+        if c not in df.columns:
+            df[c] = ""
+
+    # drop all-NaN numeric columns from training
+    num_cols_used = [c for c in num_cols if df[c].notna().any()]
+    if set(num_cols_used) != set(num_cols):
+        missing_all = sorted(set(num_cols) - set(num_cols_used))
+        print(f"[train_parlay] Dropping all-NaN numeric columns: {missing_all}")
+    num_cols = num_cols_used
+
+    X = df[num_cols + cat_cols].copy()
+
+    # ---- preprocess ----
+    num_pipe = Pipeline([("impute", SimpleImputer(strategy="median"))])
+    cat_pipe = Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
+                         ("oh", OneHotEncoder(handle_unknown="ignore", min_frequency=5))])
+    pre = ColumnTransformer([("num", num_pipe, num_cols),
+                             ("cat", cat_pipe, cat_cols)])
+
+    # ---- handle one-class case with a dummy model ----
+    classes = np.unique(y)
+    if len(classes) < 2:
+        print(f"[train_parlay] One-class labels detected (classes={classes}). Using DummyClassifier(strategy='prior').")
+        pipe = Pipeline([("pre", pre), ("clf", DummyClassifier(strategy="prior"))])
+        pipe.fit(X, y)
+        auc_train = float("nan")
+        auc_valid = float("nan")
+        chosen_C = None
+    else:
+        # ---- time-based split: train <= 2022, valid >= 2023 ----
+        season_cut = 2023
+        if "season" in df.columns:
+            train_idx = df["season"] <= (season_cut - 1)
+            valid_idx = df["season"] >= season_cut
+        else:
+            # fallback: 80/20 split by row order if no season info
+            n = len(df)
+            split = int(n * 0.8)
+            train_idx = pd.Series([True]*split + [False]*(n - split), index=df.index)
+            valid_idx = ~train_idx
+            print("[train_parlay] Warning: no 'season' column; using 80/20 split by row order.")
+
+        X_all = X
+        y_all = y
+        X_tr, y_tr = X_all[train_idx], y_all[train_idx]
+        X_va, y_va = X_all[valid_idx], y_all[valid_idx]
+
+        if X_tr.empty or X_va.empty:
+            print("[train_parlay] Warning: could not form a non-empty time split; training on all data and scoring in-sample.")
+            X_tr, y_tr = X_all, y_all
+            X_va = y_va = None
+
+        # ---- tiny C sweep with class balancing ----
+        best_auc, best_C, best_pipe = float("-inf"), None, None
+        for C in [0.25, 0.5, 1.0, 2.0, 4.0]:
+            clf = LogisticRegression(max_iter=200, solver="lbfgs", class_weight="balanced", C=C)
+            pipe_try = Pipeline([("pre", pre), ("clf", clf)])
+            pipe_try.fit(X_tr, y_tr)
+
+            try:
+                if X_va is not None:
+                    prob = pipe_try.predict_proba(X_va)[:, 1]
+                    auc = roc_auc_score(y_va, prob)
+                else:
+                    prob = pipe_try.predict_proba(X_tr)[:, 1]
+                    auc = roc_auc_score(y_tr, prob)
+            except Exception:
+                auc = float("-inf")
+
+            if auc > best_auc:
+                best_auc, best_C, best_pipe = auc, C, pipe_try
+
+        pipe = best_pipe
+        chosen_C = best_C
+
+        # report AUCs
+        try:
+            auc_train = roc_auc_score(y_tr, pipe.predict_proba(X_tr)[:, 1])
+        except Exception:
+            auc_train = float("nan")
+        if X_va is not None:
+            try:
+                auc_valid = roc_auc_score(y_va, pipe.predict_proba(X_va)[:, 1])
+            except Exception:
+                auc_valid = float("nan")
+        else:
+            auc_valid = float("nan")
+
+        split_where = "valid" if X_va is not None else "train"
+        print(f"[train_parlay] Selected C={chosen_C} with AUC={best_auc:.3f} on {split_where} set.")
+
+    # ---- save artifacts ----
+    joblib.dump(pipe, os.path.join(args.out, "parlay_model.joblib"))
+    meta = {
+        "rows": int(len(df)),
+        "win_rate": float(y.mean()) if len(y) else 0.0,
+        "auc_train": float(auc_train) if auc_train == auc_train else None,
+        "auc_valid": float(auc_valid) if auc_valid == auc_valid else None,
+        "min_season": int(args.min_season),
+        "season_cut": 2023,
+        "chosen_C": chosen_C,
+        "num_cols": num_cols,
+        "cat_cols": cat_cols,
+    }
+    with open(os.path.join(args.out, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    msg_auc = f"train AUC={meta['auc_train']:.3f}" if meta["auc_train"] is not None else "train AUC=nan"
+    msg_auc += f", valid AUC={meta['auc_valid']:.3f}" if meta["auc_valid"] is not None else ", valid AUC=nan"
+    print(f"Saved model to {args.out}\\parlay_model.joblib  ({msg_auc}, rows={meta['rows']})")
+
+if __name__ == "__main__":
+    main()

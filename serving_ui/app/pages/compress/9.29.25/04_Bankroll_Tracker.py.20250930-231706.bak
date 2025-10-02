@@ -1,0 +1,297 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import sys
+from pathlib import Path
+import streamlit as st
+_here = Path(__file__).resolve()
+for up in [_here] + list(_here.parents):
+    cand = up / 'serving_ui' / 'app' / '__init__.py'
+    if cand.exists():
+        base = str((up / 'serving_ui').resolve())
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        break
+PAGE_PROTECTED = False
+auth = login(required=PAGE_PROTECTED)
+if not auth.ok:
+    st.stop()
+show_logout()
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+import sys
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+_SERVING_UI = _HERE.parents[2]
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+st.set_page_config(page_title='04 Bankroll Tracker', page_icon='📈', layout='wide')
+
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+
+            def mount_in_sidebar(page_name: str):
+                return None
+try:
+    pass
+except Exception:
+    pass
+st.markdown('\n<style>\n  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }\n  [data-testid="stHeader"] { z-index: 9990; }\n</style>\n', unsafe_allow_html=True)
+try:
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+
+        def __nfp_apply(_):
+            return
+__nfp_apply(st)
+import sys, pathlib
+_APP_DIR = pathlib.Path(__file__).resolve().parents[1]
+_PARENT = _APP_DIR.parent
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
+try:
+    from app.bootstrap import bootstrap_paths
+except ModuleNotFoundError:
+    try:
+        from bootstrap import bootstrap_paths
+    except Exception:
+
+        def bootstrap_paths():
+            return None
+            bootstrap_paths()
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+import sys, math, datetime as dt
+from pathlib import Path
+import numpy as np
+import pandas as pd
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+EXPORTS = ROOT / 'exports'
+EXPORTS.mkdir(parents=True, exist_ok=True)
+BANKROLL_CSV = EXPORTS / 'bankroll.csv'
+
+def _read_csv_safe(p: Path) -> pd.DataFrame:
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    for enc in (None, 'utf-8', 'utf-8-sig'):
+        try:
+            return pd.read_csv(p, encoding=enc) if enc else pd.read_csv(p)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+def _to_datetime_series(s: pd.Series) -> pd.Series:
+    s_num = pd.to_numeric(s, errors='coerce')
+    if s_num.notna().any():
+        epoch_ms = s_num > 100000000000.0
+        dt_vals = pd.to_datetime(np.where(epoch_ms, s_num, s_num * 1000.0), errors='coerce', unit='ms', utc=True).tz_convert(None)
+        if dt_vals.notna().sum() == 0:
+            dt_vals = pd.to_datetime(s, errors='coerce')
+        return dt_vals
+    return pd.to_datetime(s, errors='coerce')
+
+def _prep_bankroll(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=['date', 'bankroll', 'note', 'tag'])
+    d = df.copy()
+    d.columns = [str(c).strip().lower() for c in d.columns]
+    date_candidates = ['date', 'placed_at', 'ts', 'timestamp', 'time']
+    date_col = next((c for c in date_candidates if c in d.columns), None)
+    if date_col is None:
+        if isinstance(d.index, pd.DatetimeIndex):
+            d['date'] = d.index.tz_localize(None)
+        else:
+            for c in d.columns:
+                try_dt = pd.to_datetime(d[c], errors='coerce')
+                if try_dt.notna().any():
+                    d['date'] = try_dt
+                    break
+            if 'date' not in d.columns:
+                d['date'] = pd.Timestamp.today().normalize()
+    else:
+        d['date'] = _to_datetime_series(d[date_col])
+    for col in ['bankroll', 'note', 'tag']:
+        if col not in d.columns:
+            d[col] = None
+    d['bankroll'] = pd.to_numeric(d['bankroll'], errors='coerce')
+    d = d.dropna(subset=['date'])
+    if d['bankroll'].notna().sum() == 0:
+        return d[['date', 'bankroll', 'note', 'tag']].iloc[0:0]
+    d = d.sort_values('date').drop_duplicates(subset=['date'], keep='last')
+    d['daily_change'] = d['bankroll'].diff()
+    return d[['date', 'bankroll', 'daily_change', 'note', 'tag']]
+
+def _drawdown(curve: pd.Series) -> pd.Series:
+    running_max = curve.cummax()
+    return curve - running_max
+st.title('💰 Bankroll Tracker')
+df_raw = _read_csv_safe(BANKROLL_CSV)
+df = _prep_bankroll(df_raw)
+if df.empty:
+    st.warning(f'No bankroll data found at: {BANKROLL_CSV}')
+    st.caption('Tip: create exports/bankroll.csv with columns like: date, bankroll, note')
+else:
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.dropna(subset=['date']).sort_values('date')
+    df['date_only'] = df['date'].dt.date
+    latest = df.iloc[-1]
+    now_val = float(latest['bankroll'])
+
+    def _change_since(days: int) -> float | None:
+        cutoff = latest['date'] - pd.Timedelta(days=days)
+        past = df[df['date'] <= cutoff]
+        if past.empty:
+            return None
+        past_val = float(past.iloc[-1]['bankroll'])
+        return now_val - past_val
+    delta_7 = _change_since(7)
+    delta_30 = _change_since(30)
+    dd = _drawdown(df['bankroll'])
+    max_dd = float(dd.min()) if not dd.empty else 0.0
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('Current bankroll', f'{now_val:,.2f}')
+    c2.metric('Change (7d)', f'{delta_7 or 0:+.2f}')
+    c3.metric('Change (30d)', f'{delta_30 or 0:+.2f}')
+    c4.metric('Max drawdown', f'{max_dd:,.2f}')
+    st.subheader('Bankroll over time')
+    st.line_chart(df.set_index('date')['bankroll'], width='stretch')
+from pathlib import Path as _BP
+BETS_LOG = EXPORTS / 'bets_log.csv'
+if BETS_LOG.exists():
+    try:
+        b = pd.read_csv(BETS_LOG, low_memory=False)
+
+        def _mk(s):
+            return s.astype('string').str.upper().str.replace('\\s+', '', regex=True).replace({'MONEYLINE': 'H2H', 'ML': 'H2H', 'SPREAD': 'SPREADS', 'ATS': 'SPREADS', 'TOTAL': 'TOTALS', 'TOTALSPOINTS': 'TOTALS', 'OU': 'TOTALS', 'O/U': 'TOTALS'})
+
+        def _sel(df):
+            d = df.copy()
+            d['market_norm'] = _mk(d.get('market', ''))
+            hs = pd.to_numeric(d.get('home_score'), errors='coerce')
+            as_ = pd.to_numeric(d.get('away_score'), errors='coerce')
+            price = pd.to_numeric(d.get('price', d.get('odds')), errors='coerce')
+            line = pd.to_numeric(d.get('line', d.get('spread', d.get('total'))), errors='coerce')
+            winner = np.where(hs > as_, d.get('_home_nick', ''), np.where(as_ > hs, d.get('_away_nick', ''), ''))
+            res = np.full(len(d), 'VOID', dtype=object)
+            is_ml = d['market_norm'].eq('H2H')
+            res[is_ml] = np.where(pd.Series(winner, index=d.index)[is_ml].eq(''), 'PUSH', np.where(d.loc[is_ml, '_pick_team'].astype('string').str.upper().str.replace('[^A-Z0-9 ]+', '', regex=True).str.replace('\\s+', '_', regex=True).eq(pd.Series(winner, index=d.index)[is_ml]), 'WIN', 'LOSE'))
+            is_sp = d['market_norm'].eq('SPREADS')
+            if is_sp.any():
+                margin = hs - as_
+                picked = np.where(d.loc[is_sp, '_pick_team'].astype('string').str.upper().str.contains('HOME'), line[is_sp], -line[is_sp])
+                res[is_sp] = np.where(margin[is_sp] > picked, 'WIN', np.where(margin[is_sp] < picked, 'LOSE', 'PUSH'))
+            is_to = d['market_norm'].eq('TOTALS')
+            if is_to.any():
+                side = _mk(d.get('side', ''))
+                tot = hs + as_
+                res[is_to] = np.where(tot[is_to] == line[is_to], 'PUSH', np.where(side[is_to].eq('OVER') & (tot[is_to] > line[is_to]) | side[is_to].eq('UNDER') & (tot[is_to] < line[is_to]), 'WIN', 'LOSE'))
+            d['_result'] = pd.Series(res, index=d.index).astype('string')
+            d['_profit_per_$1'] = [o / 100.0 if pd.notna(o) and o >= 100 and (r == 'WIN') else 100.0 / abs(o) if pd.notna(o) and o < 0 and (r == 'WIN') else 0.0 if r in {'PUSH', 'VOID'} else -1.0 for o, r in zip(price, d['_result'])]
+            return d
+        b = _sel(b)
+        stake = pd.to_numeric(b.get('stake'), errors='coerce').fillna(1.0)
+        cand_dt = b.get('_DateISO', b.get('_date_iso', b.get('date', b.get('commence_time', ''))))
+        b['dt'] = pd.to_datetime(cand_dt, errors='coerce').dt.date
+        daily = b.dropna(subset=['dt']).groupby('dt').apply(lambda x: float((x['_profit_per_$1'] * stake.loc[x.index]).sum())).rename('pnl').reset_index()
+        daily['dt'] = pd.to_datetime(daily['dt'])
+        daily = daily.set_index('dt').sort_index()
+        st.subheader('Overlay: daily P&L from bets (units)')
+        st.bar_chart(daily['pnl'], width='stretch')
+    except Exception as ex:
+        st.info(f'Bet P&L overlay skipped: {ex}')
+    st.subheader('Daily changes')
+    st.bar_chart(df.set_index('date')['daily_change'].fillna(0.0), width='stretch')
+    st.subheader('History')
+    show_cols = ['date', 'bankroll', 'daily_change', 'note', 'tag']
+    st.dataframe(df[show_cols], hide_index=True, width='stretch')
+
+
+
+
+

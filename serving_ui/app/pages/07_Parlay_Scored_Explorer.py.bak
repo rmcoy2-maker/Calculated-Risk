@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+# --- import bootstrap so 'app' package is importable when run from anywhere ---
+import sys, os
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+_SERVING_UI = _HERE.parents[2]  # .../serving_ui
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+from app.lib.access import live_enabled
+
+if live_enabled():
+    # do live fetch / recompute / write / API calls
+    do_expensive_refresh()
+else:
+    # skip; rely on cached CSVs in /exports that your app already loads
+    pass
+
+# -----------------------------------------------------------------------------
+import streamlit as st
+import streamlit as st
+st.set_page_config(page_title='Parlay Scored Explorer', page_icon='📊', layout='wide')
+
+import streamlit as st
+
+import streamlit as st
+
+
+import streamlit as st
+
+# --- diagnostics import (robust) ---
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        # add repo/serving_ui to sys.path so 'app' is importable
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            # fallback if pages run with CWD=app
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+            def mount_in_sidebar(page_name: str):
+                return None
+# --- /diagnostics import (robust) ---
+# 16_Parlay_Scored_Explorer.py
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import streamlit as st
+from app.utils.parlay_ui import selectable_odds_table
+from app.utils.parlay_cart import read_cart, clear_cart
+
+st.title("Parlay Scored Explorer")
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+def load_edges_or_scores():
+    repo = _repo_root()
+    scores = repo / "exports" / "parlay_scores.csv"
+    edges  = repo / "exports" / "edges.csv"
+    if scores.exists() and scores.stat().st_size > 0:
+        return pd.read_csv(scores), str(scores)
+    if edges.exists() and edges.stat().st_size > 0:
+        return pd.read_csv(edges), str(edges)
+    return pd.DataFrame(), str(edges)
+
+df, src_path = load_edges_or_scores()
+st.write(f"**Source:** `{src_path}` • **Rows:** {len(df):,}")
+
+has_score = "parlay_proba" in df.columns
+if not has_score:
+    st.warning("No `parlay_proba` found. Did you run `predict_parlay_score.py`? Showing base edges instead.", icon="⚠️")
+
+# Filters with "All"
+def _num_unique(df, col):
+    if col not in df.columns: return []
+    s = pd.to_numeric(df[col], errors="coerce").dropna().astype(int)
+    return sorted(s.unique().tolist())
+
+seasons_all = _num_unique(df, "season")
+weeks_all   = _num_unique(df, "week")
+
+left, right = st.columns(2)
+with left:
+    season_options = ["All"] + [str(y) for y in seasons_all]
+    season_sel = st.multiselect("Season", season_options, default=["All"])
+with right:
+    week_options = ["All"] + [str(w) for w in (weeks_all or list(range(1,23)))]
+    week_sel = st.multiselect("Week", week_options, default=["All"])
+
+work = df.copy()
+if "All" not in season_sel and seasons_all:
+    keep = {int(x) for x in season_sel if str(x).isdigit()}
+    work = work[work["season"].astype("Int64").isin(keep)]
+if "All" not in week_sel:
+    keep = {int(x) for x in week_sel if str(x).isdigit()}
+    if "week" in work.columns:
+        work = work[work["week"].astype("Int64").isin(keep)]
+
+if has_score:
+    thr = st.slider("Min parlay probability", 0.0, 1.0, 0.70, 0.01)
+    work = work[work["parlay_proba"].fillna(0) >= thr]
+    st.caption(f"{len(work):,} rows ≥ {thr:.2f}")
+
+pref_cols = [c for c in ["ts","season","week","sport","league","market","side","line","odds","p_win","ev","parlay_proba","dec_comb","legs","parlay_stake","team_name","home","away","game_id"] if c in work.columns]
+with st.expander("Preview (top 2,500 rows)", expanded=True):
+    st.dataframe((work[pref_cols] if pref_cols else work).head(2500), use_container_width=True)
+
+st.download_button("Download filtered as CSV", data=work.to_csv(index=False).encode("utf-8"),
+                   file_name="parlay_scored_filtered.csv", mime="text/csv")
+
+if has_score:
+    arr = pd.to_numeric(work.get("parlay_proba"), errors="coerce").dropna().to_numpy()
+    if arr.size:
+        qs = np.quantile(arr, [0, .25, .5, .75, .9, .95, .99, 1.0])
+        st.write("**Parlay probability quantiles:**",
+                 {k: round(float(v), 3) for k, v in zip(["min","25%","50%","75%","90%","95%","99%","max"], qs)})
+
+
+
+
+
+# --- AUTO-APPENDED: add-to-cart selector ---
+try:
+    if "work" in globals() and isinstance(work, pd.DataFrame):
+        selectable_odds_table(work, page_key="parlay_scored", page_name="07_Parlay_Scored_Explorer")
+except Exception:
+    pass
+
+
+
+

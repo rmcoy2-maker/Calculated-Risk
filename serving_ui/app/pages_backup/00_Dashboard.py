@@ -1,0 +1,46 @@
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+from serving_ui.app._layout import header
+from app.lib.bet_log import read_log
+from app.lib.registry import current_model_version
+header('Dashboard')
+root = Path(__file__).resolve().parents[2]
+edges_paths = [root / 'exports/edges.csv', root / 'data_scaffnew/exports/edges.csv']
+edges = None
+for p in edges_paths:
+    if p.exists() and p.stat().st_size > 0:
+        try:
+            edges = pd.read_csv(p)
+            break
+        except Exception:
+            pass
+log = read_log()
+result_col = log.get('result') if 'result' in log.columns else pd.Series([''])
+settled = log[~result_col.astype(str).str.lower().isin(['', 'open'])].copy() if not log.empty else log
+c1, c2, c3 = st.columns(3)
+c1.metric('Model version', current_model_version())
+c2.metric('Edges loaded', f'{(0 if edges is None else len(edges)):,}')
+c3.metric('Settled bets', f'{(0 if settled is None else len(settled)):,}')
+st.divider()
+
+def safe_page_link(col, rel_path: str, label: str, icon: str | None=None):
+    """
+    Prefer st.page_link when the app is launched from the entry script (so pages are registered).
+    If not registered (e.g., you ran this page directly), fall back to a normal button.
+    """
+    try:
+        col.page_link(rel_path, label=label, icon=icon)
+    except Exception:
+        if col.button(f"{(icon + ' ' if icon else '')}{label}"):
+            try:
+                st.switch_page(rel_path)
+            except Exception:
+                col.warning('Launch the app from its entry script so pages are registered.')
+c1, c2, c3, c4 = st.columns(4)
+safe_page_link(c1, 'pages/05_All_Picks_Explorer.py', 'All Picks Explorer', 'ðŸ”Ž')
+safe_page_link(c2, 'pages/18_Quick_Bet_Slip.py', 'Quick Bet Slip', 'ðŸ“\x9d')
+safe_page_link(c3, 'pages/13_Portfolio_Dashboard.py', 'Portfolio Dashboard', 'ðŸ“ˆ')
+safe_page_link(c4, 'pages/23_Risk_Analytics.py', 'Risk Analytics', 'ðŸ“‰')
+safe_page_link(c1, 'pages/08_Ghost_Parlay_Calc.py', 'Ghost Calculator', 'ðŸ‘»')
+safe_page_link(st, 'pages/22_Help_Docs.py', 'Help & Docs', 'â\x9d“')

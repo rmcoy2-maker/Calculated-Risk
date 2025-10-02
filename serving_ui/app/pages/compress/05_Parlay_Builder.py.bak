@@ -1,0 +1,334 @@
+
+# Streamlit Parlay Builder (Merged + Robust)
+# Save as: serving_ui/app/pages/09_Parlay_Builder.py
+
+import os
+from pathlib import Path
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# Optional alias when we want to avoid shadowing inside try/except snippets
+_st = st
+
+# -------------------- Helpers --------------------
+def american_to_decimal(o):
+    try:
+        o = float(o)
+    except Exception:
+        return np.nan
+    if o > 0:
+        return 1.0 + (o / 100.0)
+    if o < 0:
+        return 1.0 + (100.0 / abs(o))
+    return np.nan
+
+def american_to_prob(o):
+    try:
+        o = float(o)
+    except Exception:
+        return np.nan
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    if o < 0:
+        return abs(o) / (abs(o) + 100.0)
+    return np.nan
+
+def to_numeric(s):
+    return pd.to_numeric(s, errors="coerce")
+
+def norm_market(m: str) -> str:
+    m = (str(m) if m is not None else "").strip().lower()
+    if m in ("h2h", "ml", "moneyline", "money line"):
+        return "H2H"
+    if m.startswith("spread"):
+        return "SPREADS"
+    if m.startswith("total"):
+        return "TOTALS"
+    return m.upper()
+
+def _normalize_team_text(s):
+    if not isinstance(s, str) or not s.strip():
+        return ""
+    return s.strip().upper()
+
+def _to_nick(s):
+    s = _normalize_team_text(s)
+    return s.split()[-1] if s else ""
+
+def _col(df, names, default=None):
+    for n in names:
+        if n in df.columns:
+            return df[n]
+    return pd.Series([default] * len(df))
+
+# -------------------- Paths & autoload --------------------
+def find_exports_dir() -> Path:
+    # 1) ENV var
+    env = os.environ.get("EDGE_EXPORTS_DIR", "").strip()
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+
+    # 2) Walk upward from CWD looking for a folder literally named "exports"
+    here = Path.cwd()
+    for up in [here] + list(here.parents)[:5]:
+        cand = up / "exports"
+        if cand.exists():
+            return cand
+
+    # 3) Common repo layouts
+    common = [
+        here / "exports",
+        here / ".." / "exports",
+        here / "serving_ui" / "exports",
+        here / "app" / "exports",
+        Path(__file__).resolve().parent.parent.parent / "exports",  # serving_ui/app/ -> repo/exports
+    ]
+    for c in common:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+
+    # 4) Last resort: CWD
+    return here
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def autoload_edges(with_caption: bool = True):
+    root = find_exports_dir()
+    env_path = os.environ.get("EDGE_SOURCE_FILE")
+    candidates = []
+    if env_path:
+        p = Path(env_path)
+        candidates.append(p if p.is_absolute() else (Path.cwd() / env_path))
+    candidates += [
+        root / "edges_graded_full.csv",
+        root / "edges_graded_plus.csv",
+        root / "edges_graded.csv",
+        root / "edges.csv",
+        root / "lines_live.csv",   # <— merged fix: fallback to live
+    ]
+    picked_path = None
+    df = pd.DataFrame()
+    for p in candidates:
+        try:
+            if p.exists() and p.stat().st_size > 0:
+                tmp = pd.read_csv(p, low_memory=False, encoding="utf-8-sig")
+                if not tmp.empty:
+                    picked_path = p
+                    df = tmp
+                    break
+        except Exception:
+            continue
+    if with_caption:
+        st.caption(
+            f"Loaded: {picked_path or '—'} · exports root: {root or '(not found)'} · "
+            f"rows={len(df):,} · cols={len(df.columns)}"
+        )
+    return df, (str(picked_path) if picked_path else None), str(root)
+
+# -------------------- UI --------------------
+st.title("Parlay Builder")
+# ---- Force reload + diagnostics ----
+col_a, col_b = st.columns([1, 3])
+with col_a:
+    if st.button("Force reload", help="Clear caches and reload file candidates"):
+        try:
+            autoload_edges.clear()  # clear @st.cache_data
+        except Exception:
+            pass
+        st.experimental_rerun()
+
+with col_b:
+    exp_dir = find_exports_dir()
+    st.caption(f"exports dir → {exp_dir}  |  EDGE_SOURCE_FILE → {os.environ.get('EDGE_SOURCE_FILE','(not set)')}")
+
+# Show which files exist (so we know why rows=0)
+_cands = [
+    ("edges_graded_full.csv", (find_exports_dir() / "edges_graded_full.csv")),
+    ("edges_graded_plus.csv", (find_exports_dir() / "edges_graded_plus.csv")),
+    ("edges_graded.csv",      (find_exports_dir() / "edges_graded.csv")),
+    ("edges.csv",             (find_exports_dir() / "edges.csv")),
+    ("lines_live.csv",        (find_exports_dir() / "lines_live.csv")),
+]
+diag = []
+for name, p in _cands:
+    try:
+        diag.append({
+            "file": name,
+            "exists": "yes" if p.exists() else "no",
+            "size_bytes": int(p.stat().st_size) if p.exists() else 0,
+            "full_path": str(p if p.exists() else ""),
+        })
+    except Exception:
+        diag.append({"file": name, "exists": "error", "size_bytes": 0, "full_path": ""})
+
+st.dataframe(pd.DataFrame(diag), use_container_width=True, height=180)
+
+edges, edges_path, root_path = autoload_edges(with_caption=True)
+if edges.empty:
+    st.stop()
+
+# Normalize core columns
+edges = edges.copy()
+edges["market_norm"] = _col(edges, ["market", "Market"]).map(norm_market)
+edges["_odds"] = _col(edges, ["odds", "price_american", "Odds", "american_odds"])
+edges["_odds"] = to_numeric(edges["_odds"])
+
+# Parse date
+def parse_date_from_any(df: pd.DataFrame) -> pd.Series:
+    for c in ["commence_time", "CommenceTime", "Date", "_date", "game_date"]:
+        if c in df.columns:
+            dt = pd.to_datetime(df[c], errors="coerce", utc=True).dt.tz_convert(None)
+            if dt.notna().any():
+                return dt.dt.date
+    if "game_id" in df.columns:
+        m = df["game_id"].astype(str).str.extract(r"(\d{4}-\d{2}-\d{2})", expand=False)
+        dt = pd.to_datetime(m, errors="coerce")
+        return dt.dt.date
+    return pd.Series([pd.NaT] * len(df))
+
+edges["_date"] = parse_date_from_any(edges)
+
+# Teams / side
+edges["_home_raw"] = _col(edges, ["home", "HomeTeam", "_home_team", "_home_abbr", "_home_abbr_norm", "home_team"], "")
+edges["_away_raw"] = _col(edges, ["away", "AwayTeam", "_away_team", "_away_abbr", "_away_abbr_norm", "away_team"], "")
+edges["_home_nick"] = edges["_home_raw"].map(_to_nick)
+edges["_away_nick"] = edges["_away_raw"].map(_to_nick)
+
+side_raw = _col(edges, ["selection", "Selection", "side", "team", "_pick_team"], "").astype(str)
+edges["_side_raw"] = side_raw
+
+is_totals = edges["market_norm"].eq("TOTALS")
+edges["_side"] = np.where(
+    is_totals,
+    side_raw.str.strip().str.title().map({"Over": "Over", "Under": "Under"}),
+    side_raw.map(_to_nick)
+)
+
+# Compute p_win source: prefer p_model -> p_win -> implied from odds
+p_model = _col(edges, ["p_model", "p_pred"])
+p_win   = _col(edges, ["p_win", "prob", "prob_win"])
+edges["_p_implied"] = edges["_odds"].map(american_to_prob)
+edges["_p_win"] = np.where(~p_model.isna(), p_model, np.where(~p_win.isna(), p_win, edges["_p_implied"]))
+edges["_p_win"] = pd.to_numeric(edges["_p_win"], errors="coerce").clip(0, 1)
+
+# EV per $1 stake
+edges["_dec"] = edges["_odds"].map(american_to_decimal)
+edges["_payout_per_$1"] = edges["_dec"] - 1.0
+edges["_ev_per_$1"] = edges["_p_win"] * edges["_payout_per_$1"] - (1.0 - edges["_p_win"])
+
+# Game identifier (for per-game cap). Avoid astype; stringify safely.
+def _date_to_str(d):
+    try:
+        return d.isoformat()
+    except Exception:
+        return str(d) if d is not None else ""
+
+edges["_game_key"] = (
+    edges["_date"].map(_date_to_str) + "::" + edges["_home_nick"].fillna("") + "@" + edges["_away_nick"].fillna("")
+)
+
+# -------------------- Controls --------------------
+st.sidebar.subheader("Filters")
+min_prob = st.sidebar.slider("Min P(win)", 0.40, 0.80, 0.50, 0.01)
+min_abs_american = st.sidebar.slider("Min |odds|", 100, 300, 110, 5)
+allowed_markets = st.sidebar.multiselect("Markets", ["H2H", "SPREADS", "TOTALS"], default=["H2H", "SPREADS", "TOTALS"])
+per_game_cap = st.sidebar.slider("Max legs per game", 1, 2, 1, 1)
+
+# Leg count (hard caps per your spec)
+min_legs, max_legs = 3, 10
+desired_legs = st.sidebar.slider("Desired legs", min_legs, max_legs, 5, 1)
+
+# -------------------- Filter --------------------
+filt = (
+    edges["market_norm"].isin(allowed_markets)
+    & edges["_p_win"].ge(min_prob)
+    & edges["_odds"].abs().ge(min_abs_american)
+)
+work = edges.loc[filt].copy()
+
+st.caption(
+    f"rows={len(work):,} · market mix={work['market_norm'].value_counts().to_dict()}"
+)
+if work.empty:
+    st.warning("No legs meet your filters. Loosen thresholds.")
+    st.stop()
+
+# -------------------- Select legs (greedy by EV) --------------------
+work = work.sort_values(["_ev_per_$1", "_p_win"], ascending=[False, False]).copy()
+
+sel_rows, per_game_counts = [], {}
+for _, r in work.iterrows():
+    g = r["_game_key"]
+    if per_game_counts.get(g, 0) >= per_game_cap:
+        continue
+    sel_rows.append(r)
+    per_game_counts[g] = per_game_counts.get(g, 0) + 1
+    if len(sel_rows) >= desired_legs:
+        break
+
+sel = pd.DataFrame(sel_rows)
+if len(sel) < min_legs:
+    st.warning(f"Need at least {min_legs} legs at current filters/caps. Only {len(sel)} available.")
+    st.stop()
+
+# -------------------- Compute parlay payout --------------------
+leg_probs = sel["_p_win"].fillna(0).clip(0,1).to_list()
+win_prob = float(np.prod(leg_probs)) if leg_probs else 0.0
+
+decs = sel["_dec"].fillna(1.0).to_list()
+combo_dec = float(np.prod(decs)) if decs else 1.0
+payout_per_1 = max(combo_dec - 1.0, 0.0)
+ev_per_1 = win_prob * payout_per_1 - (1.0 - win_prob)
+
+st.subheader("Your Parlay")
+show_cols = [c for c in ["_date","market_norm","_side","_odds","_p_win","_ev_per_$1","_home_raw","_away_raw"] if c in sel.columns]
+st.dataframe(
+    sel[show_cols].rename(columns={
+        "_date":"Date","market_norm":"Market","_side":"Side","_odds":"Odds (US)",
+        "_p_win":"P(win)","_ev_per_$1":"EV per $1","_home_raw":"Home","_away_raw":"Away"
+    }),
+    use_container_width=True
+)
+st.markdown(
+    f"**Combined P(win):** {win_prob:.4f}  \n"
+    f"**Combined Decimal Odds:** {combo_dec:.4f}  \n"
+    f"**Payout per $1:** {payout_per_1:.4f}  \n"
+    f"**EV per $1:** {ev_per_1:.4f}"
+)
+
+if st.button("Export parlay legs to CSV", use_container_width=True):
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = find_exports_dir() / f"parlay_selection_{ts}.csv"
+    sel.to_csv(out, index=False, encoding="utf-8-sig")
+    st.success(f"Saved: {out}")
+
+# ===== Enhance display: house vs computer =====
+try:
+    def _american_to_prob(x):
+        try:
+            o = float(x)
+        except Exception:
+            return None
+        return 100.0/(o+100.0) if o > 0 else (-o)/((-o)+100.0)
+
+    if "_p_implied" not in edges.columns and "odds" in edges.columns:
+        edges["_p_implied"] = pd.to_numeric(edges["odds"], errors="coerce").map(_american_to_prob)
+    if "_p_win" in edges.columns and "_p_implied" in edges.columns:
+        edges["_edge"] = edges["_p_win"] - edges["_p_implied"]
+
+    if "sel" in globals():
+        _cols = [c for c in ["_p_win","_p_implied","_edge","_ev_per_$1"] if c in sel.columns]
+        if _cols:
+            with _st.expander("Model vs House (quick view)"):
+                _st.dataframe(sel[_cols].head(50), use_container_width=True)
+except Exception:
+    pass
+

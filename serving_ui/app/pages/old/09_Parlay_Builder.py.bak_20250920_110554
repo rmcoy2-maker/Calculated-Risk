@@ -1,0 +1,565 @@
+﻿from app.bootstrap import bootstrap_paths; bootstrap_paths()
+# -*- coding: utf-8 -*-
+
+import sys, json, uuid, heapq, itertools, os, datetime
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+from datetime import date
+
+# ----------------------------- setup / paths -----------------------------
+ROOT = Path(__file__).resolve().parents[2]          # ...\serving_ui
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+REPO = ROOT.parents[1]                               # ...\edge-finder
+EXPORTS = ROOT / "exports"
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+def _pick_latest_edges():
+    candidates = [
+        EXPORTS / "edges.csv",                        # serving_ui\exports
+        REPO / "exports" / "edges.csv",               # repo root \exports
+        REPO / "data_scaffold" / "exports" / "edges.csv",
+    ]
+    existing = [p for p in candidates if p.exists()]
+    return max(existing, key=lambda p: p.stat().st_mtime) if existing else candidates[0]
+
+with st.expander("Edges source (debug)", expanded=False):
+    try:
+        src = _pick_latest_edges()
+        ts = datetime.datetime.fromtimestamp(os.path.getmtime(src))
+        st.write(f"Using: `{src}`")
+        st.write(f"Last modified: {ts}")
+    except Exception as e:
+        st.error(f"Could not determine edges source: {e}")
+
+# Files
+PARLAYS_CSV = EXPORTS / "parlays.csv"
+BETS_LOG_CSV = EXPORTS / "bets_log.csv"
+PARLAY_HEADER = ["ts","market","odds","p_win","ev","stake","status","result","pnl","tag","legs_json","parlay_id","notes"]
+BETLOG_HEADER = ["ts","market","ref","side","line","odds","p_win","ev","stake","status","result","pnl","tag","legs_json","bet_id","notes"]
+
+# ----------------------------- imports from lib -----------------------------
+from app.lib.csv_utils import append_dict_row, utc_ts
+from app.lib.correlation import check_correlation
+
+# ----------------------------- helpers -----------------------------
+def _row_game_date(r):
+    v = r.get("start_time")
+    if v is not None and str(v).strip():
+        dt = pd.to_datetime(v, utc=True, errors="coerce")
+        if pd.notna(dt):
+            return dt.date()
+    gid = str(r.get("game_id") or "")
+    parts = gid.split("-", 3)[0:3]
+    if len(parts) == 3 and all(x.isdigit() for x in parts):
+        try:
+            return date(int(parts[0]), int(parts[1]), int(parts[2]))
+        except Exception:
+            return None
+    return None
+
+def _normalize_corr_result(res):
+    if isinstance(res, tuple) and len(res) >= 2:
+        ok, details = res[0], res[1]
+        return bool(ok), (details if isinstance(details, dict) else {"details": details})
+    if isinstance(res, bool):
+        return res, {}
+    if res is None:
+        return True, {}
+    return True, {"details": res}
+
+def american_to_decimal(odds: int) -> float:
+    odds = int(odds)
+    return 1 + (odds/100.0 if odds > 0 else 100.0/abs(odds))
+
+def implied_prob_from_american(am: float) -> float:
+    am = float(am)
+    return 100.0 / (am + 100.0) if am >= 0 else abs(am) / (abs(am) + 100.0)
+
+def prob_or_implied(lg) -> float:
+    try:
+        p = float(lg.get("p_win", float("nan")))
+    except Exception:
+        p = float("nan")
+    if not (0.0 < p < 1.0):
+        p = implied_prob_from_american(lg["odds"])
+    return max(0.0, min(1.0, p))
+
+def parlay_stats(legs: list[dict]):
+    parlay_dec, parlay_p = 1.0, 1.0
+    for lg in legs:
+        parlay_dec *= american_to_decimal(lg["odds"])
+        parlay_p   *= prob_or_implied(lg)
+    if parlay_dec <= 1.0000001:
+        parlay_am = -1000000
+    else:
+        parlay_am = int(round((parlay_dec-1)*100)) if parlay_dec >= 2 else int(round(-100/(parlay_dec-1)))
+    ev = (parlay_dec * parlay_p) - 1
+    return parlay_dec, parlay_am, parlay_p, ev
+
+def kelly_fraction(p: float, american_odds: int, aggressiveness: float = 1.0) -> float:
+    try:
+        p = float(p)
+        b = american_to_decimal(int(american_odds)) - 1.0
+        q = 1.0 - p
+        if b <= 0 or not (0.0 < p < 1.0):
+            return 0.0
+        f = (b * p - q) / b
+        f = max(0.0, min(1.0, f))
+        return float(aggressiveness) * f
+    except Exception:
+        return 0.0
+
+def read_current_bankroll(default: float = 0.0) -> float:
+    try:
+        p = EXPORTS / "bankroll.csv"
+        if not p.exists():
+            return float(default)
+        _df = pd.read_csv(p, encoding="utf-8-sig")
+        if "bankroll" in _df.columns and not _df.empty:
+            return float(_df["bankroll"].iloc[-1])
+    except Exception:
+        pass
+    return float(default)
+
+def log_parlay(legs, odds, p_win, ev, stake=None, tag="manual", notes=""):
+    row = {"ts": utc_ts(),"market":"parlay","odds":odds,"p_win":p_win,"ev":ev,"stake":stake,"status":"open",
+           "result":None,"pnl":None,"tag":tag,"legs_json":json.dumps(legs),"parlay_id":uuid.uuid4().hex[:12],"notes":notes}
+    append_dict_row(PARLAYS_CSV, row, PARLAY_HEADER)
+    return row
+
+def log_bet(legs, odds, p_win, ev, stake=None, tag="manual", notes=""):
+    row = {"ts": utc_ts(),"market":"parlay","ref":None,"side":None,"line":None,"odds":odds,"p_win":p_win,"ev":ev,"stake":stake,
+           "status":"open","result":None,"pnl":None,"tag":tag,"legs_json":json.dumps(legs),"bet_id":uuid.uuid4().hex[:12],"notes":notes}
+    append_dict_row(BETS_LOG_CSV, row, BETLOG_HEADER)
+    return row
+
+# ----------------------------- UI setup -----------------------------
+st.set_page_config(page_title="Parlay Builder", layout="wide")
+st.title("🎲 Parlay Builder")
+if "picked_legs" not in st.session_state:
+    st.session_state["picked_legs"] = []
+
+# ----------------------------- manual build -----------------------------
+with st.expander("Manual Build", expanded=True):
+    st.write("Pick legs manually, edit them, and log parlays.")
+    legs = st.session_state["picked_legs"]
+    st.dataframe(pd.DataFrame(legs), use_container_width=True, hide_index=True)
+
+    if legs:
+        dec, am, p, ev = parlay_stats(legs)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Odds", f"{am:+}")
+        c2.metric("Win prob", f"{p:.2%}")
+        c3.metric("EV", f"{ev:+.3f}")
+
+        bk_default = read_current_bankroll(0.0)
+        k1, k2, k3 = st.columns([1.2,1,1])
+        with k1: bankroll_val = st.number_input("Bankroll (from ledger)", min_value=0.0, step=10.0, value=float(bk_default))
+        with k2: kelly_scale = st.selectbox("Kelly scale", ["1.00 (Full)","0.50 (Half)","0.25 (Quarter)"], index=1)
+        with k3: k_mult = {"1.00 (Full)":1.00,"0.50 (Half)":0.50,"0.25 (Quarter)":0.25}[kelly_scale]
+        k_frac = kelly_fraction(p, am, k_mult)
+        k_stake = round(bankroll_val * k_frac, 2) if bankroll_val and k_frac else 0.0
+
+        s1, s2 = st.columns([1,2])
+        with s1: st.metric("Kelly fraction", f"{k_frac:.2%}")
+        with s2: stake_input = st.number_input("Stake (defaults to Kelly recommendation)", min_value=0.0, step=1.0, value=float(k_stake))
+        notes = st.text_input("Notes", key="manual_notes")
+
+        def _bucket_market(m: str) -> str:
+            s = str(m or "").lower()
+            if "moneyline" in s or s in ("ml","h2h"): return "Moneyline"
+            if "spread" in s: return "Spread"
+            if "total" in s: return "Total (O/U)"
+            if "prop" in s: return "Props"
+            return "Other"
+
+        with st.expander("Summary", expanded=True):
+            _df = pd.DataFrame(legs)
+            if not _df.empty:
+                _df["bucket"] = _df["market"].apply(_bucket_market)
+                type_counts = _df["bucket"].value_counts().rename_axis("type").reset_index(name="count")
+                book_counts = (_df["book"].fillna("—").value_counts().rename_axis("book").reset_index(name="count")) if "book" in _df.columns else pd.DataFrame({"book": [], "count": []})
+                sA, sB, sC = st.columns(3)
+                with sA: st.caption("Legs by type"); st.dataframe(type_counts, use_container_width=True, hide_index=True)
+                with sB: st.caption("Legs by book"); st.dataframe(book_counts, use_container_width=True, hide_index=True)
+                with sC:
+                    st.caption("Parlay metrics")
+                    st.write(f"**American odds:** {am:+}")
+                    st.write(f"**Win prob:** {p:.2%}")
+                    st.write(f"**EV (per $1):** {ev:+.3f}")
+                    st.write(f"**Kelly stake @ {kelly_scale}:** ${k_stake:,.2f}")
+            else:
+                st.caption("No legs selected yet.")
+
+        a, b = st.columns(2)
+        with a:
+            if st.button("📝 Log Manual Parlay"):
+                try:
+                    row = log_parlay(legs, am, p, ev, stake=stake_input, tag="manual", notes=notes)
+                    log_bet(legs, am, p, ev, stake=stake_input, tag="manual", notes=notes)
+                    st.success(f"Manual parlay logged (ID: {row['parlay_id']})")
+                except Exception as e:
+                    st.error(f"Failed to log manual parlay: {e}")
+        with b:
+            if st.button("🗑️ Clear Legs"):
+                st.session_state["picked_legs"] = []
+                st.rerun()
+
+# ----------------------------- picker / multi-add -----------------------------
+with st.expander("Pick legs (edges.csv) + Build from market_lines", expanded=False):
+
+    def _to_int_odds(x):
+        try:
+            s = str(x).strip().replace("+","")
+            return int(round(float(s)))
+        except Exception:
+            return None
+
+    def _build_edges_from_lines(df_src: pd.DataFrame) -> pd.DataFrame:
+        d = df_src.copy()
+        d.columns = [c.lower() for c in d.columns]
+        ren = {"sportsbook":"book","book_name":"book","bookmaker":"book","site":"book",
+               "american":"odds","price":"odds",
+               "bet_type":"market","market_type":"market","wager_type":"market",
+               "selection":"side","team":"side",
+               "total":"line","points":"line","threshold":"line",
+               "prob":"p_win","probability":"p_win","implied_prob":"p_win",
+               "note":"ref","id":"ref"}
+        d.rename(columns={k:v for k,v in ren.items() if k in d.columns}, inplace=True)
+        for col in ["game_id","book","market","side","player","line","odds","p_win","ref","home_team","away_team","start_time","outcome"]:
+            if col not in d.columns: d[col] = None
+
+        def mk_game_id(r):
+            if pd.notna(r.get("game_id")) and str(r.get("game_id")).strip():
+                return str(r["game_id"])
+            ht, at = r.get("home_team"), r.get("away_team")
+            dt = str(r.get("start_time") or "")
+            if pd.notna(ht) and pd.notna(at):
+                return f"{dt[:10]}-{str(at)[:3]}@{str(ht)[:3]}".replace(" ","")
+            return None
+
+        rows = []
+        # Moneyline
+        ml_mask = d["market"].astype(str).str.contains(r"\b(ml|moneyline|h2h)\b", case=False, na=False)
+        for _, r in d[ml_mask].iterrows():
+            rows.append({"game_id": mk_game_id(r), "market":"Moneyline", "side":r.get("side"),
+                         "line":None, "book":r.get("book"), "odds":_to_int_odds(r.get("odds")),
+                         "p_win":r.get("p_win"), "ref":r.get("ref")})
+        # Spread
+        sp = d[d["market"].astype(str).str.contains("spread", case=False, na=False)]
+        for _, r in sp.iterrows():
+            rows.append({"game_id": mk_game_id(r), "market":"Spread", "side":r.get("side"),
+                         "line":r.get("line"), "book":r.get("book"), "odds":_to_int_odds(r.get("odds")),
+                         "p_win":r.get("p_win"), "ref":r.get("ref")})
+        # Total (O/U)
+        tot = d[d["market"].astype(str).str.contains("total", case=False, na=False)]
+        for _, r in tot.iterrows():
+            ou = (r.get("outcome") or r.get("side") or "").strip().title()
+            if ou not in ("Over","Under"):
+                s = str(r.get("side") or "")
+                ou = "Over" if "o" in s.lower() else ("Under" if "u" in s.lower() else "Over")
+            rows.append({"game_id": mk_game_id(r), "market":"Total", "side":ou,
+                         "line":r.get("line"), "book":r.get("book"), "odds":_to_int_odds(r.get("odds")),
+                         "p_win":r.get("p_win"), "ref":r.get("ref")})
+        # Props (basic)
+        has_player = "player" in d.columns
+        prop_mask = d["market"].astype(str).str.contains("prop", case=False, na=False)
+        if has_player:
+            prop_mask = prop_mask | d["player"].notna()
+        pr = d[prop_mask]
+        for _, r in pr.iterrows():
+            m = str(r.get("market") or "")
+            ptype = m.split(":", 1)[-1].strip() if ":" in m.lower() else (m if "prop" in m.lower() else "Prop")
+            ou = (r.get("outcome") or r.get("side") or "").strip().title()
+            if ou not in ("Over", "Under"): ou = "Over"
+            side = f"{ou} {str(r.get('player') or r.get('side') or '').strip()}".strip()
+            rows.append({"game_id": mk_game_id(r), "market": f"Prop: {ptype}", "side": side,
+                         "line": r.get("line"), "book": r.get("book"),
+                         "odds": _to_int_odds(r.get("odds")), "p_win": r.get("p_win"), "ref": r.get("ref")})
+
+        out = pd.DataFrame(rows, columns=["game_id","market","side","line","book","odds","p_win","ref"])
+        return out[out["odds"].notna()].reset_index(drop=True)
+
+    # ---- Load edges ----
+    edges_path = _pick_latest_edges()
+    lines_2025 = EXPORTS / "market_lines_2025.csv"
+    lines_any  = EXPORTS / "market_lines.csv"
+
+    edges_df = None
+    if edges_path.exists():
+        try:
+            edges_df = pd.read_csv(edges_path)
+        except Exception:
+            edges_df = None
+    if edges_df is None and (lines_2025.exists() or lines_any.exists()):
+        try:
+            src = pd.read_csv(lines_2025 if lines_2025.exists() else lines_any)
+            edges_df = _build_edges_from_lines(src)
+        except Exception as e:
+            st.error(f"Failed to build edges from market_lines: {e}")
+
+    if edges_df is None or edges_df.empty:
+        st.info("No edges found yet. Drop an 'exports/edges.csv' or 'exports/market_lines*.csv' to enable the picker.")
+    else:
+        # Normalize display
+        show_cols = [c for c in ["game_id","market","side","line","book","odds","p_win","ref","start_time"] if c in edges_df.columns]
+        disp = edges_df[show_cols].copy()
+        if "p_win" in disp.columns:
+            with np.errstate(invalid="ignore"):
+                disp["p_win"] = pd.to_numeric(disp["p_win"], errors="coerce")
+                disp["p_win"] = disp["p_win"].where((disp["p_win"]>0)&(disp["p_win"]<1), np.nan)
+                disp["p_win"] = (disp["p_win"]*100).round(1)
+
+        def _bucket_market(m: str) -> str:
+            s = str(m or "").lower()
+            if "moneyline" in s or s in ("ml","h2h"): return "Moneyline"
+            if "spread" in s: return "Spread"
+            if "total" in s: return "Total (O/U)"
+            if "prop" in s: return "Props"
+            return "Other"
+        disp["bucket"] = disp["market"].apply(_bucket_market)
+
+        # ---------- Quick filter row ----------
+        r1, r2 = st.columns([1.2, 2])
+        with r1:
+            bucket_choice = st.radio("Bet type", ["All","Moneyline","Spread","Total (O/U)","Props"],
+                                     horizontal=True, key="picker_bucket_choice")
+        with r2:
+            txt_search = st.text_input("Search team / player / text", key="picker_search",
+                                       placeholder="e.g., Dolphins, Over, Mahomes, -3.5")
+
+        # ---------- More filters (types + odds + book + date) ----------
+        with st.expander("More filters", expanded=False):
+            types = ["Moneyline","Spread","Total (O/U)","Props","Other"]
+            st.multiselect("Bet type(s)", options=types, default=types, key="picker_bucket_multi")
+            if "odds" in disp.columns:
+                all_odds = pd.to_numeric(disp["odds"], errors="coerce")
+                o_min = int(all_odds.min(skipna=True)) if all_odds.notna().any() else -5000
+                o_max = int(all_odds.max(skipna=True)) if all_odds.notna().any() else 10000
+                o1, o2 = st.slider("American odds range", o_min, o_max, (o_min, o_max), step=5, key="picker_odds_range")
+            else:
+                o1, o2 = None, None
+                st.caption("No 'odds' column found for odds range filter.")
+            books = sorted([b for b in disp.get("book", pd.Series(dtype=str)).dropna().unique().tolist() if str(b).strip()])
+            st.multiselect("Sportsbook(s)", options=books, default=(books[:1] if books else []), key="picker_book_multi")
+
+            _dates = disp.apply(_row_game_date, axis=1)
+            min_date = _dates.min() if hasattr(_dates,'min') else None
+            if 'picker_date_cut' not in st.session_state:
+                st.session_state['picker_date_cut'] = (min_date or date.today())
+            st.date_input("Only include games on/after", value=st.session_state['picker_date_cut'], key="picker_date_cut")
+
+            if st.button("Reset filters"):
+                for k in ["picker_bucket_choice","picker_bucket_multi","picker_odds_range","picker_book_multi","picker_date_cut","picker_search"]:
+                    if k in st.session_state: del st.session_state[k]
+                st.rerun()
+
+        # ---------- Apply filters ----------
+        disp_filt = disp.copy()
+        if bucket_choice != "All":
+            disp_filt = disp_filt[disp_filt["bucket"] == bucket_choice]
+        if "picker_bucket_multi" in st.session_state:
+            disp_filt = disp_filt[disp_filt["bucket"].isin(st.session_state["picker_bucket_multi"])]
+        if o1 is not None and o2 is not None and "odds" in disp_filt.columns:
+            disp_filt = disp_filt[pd.to_numeric(disp_filt["odds"], errors="coerce").between(o1, o2)]
+        if txt_search.strip():
+            q = txt_search.strip().lower()
+            cols = [c for c in ["game_id","market","side","line","book","ref"] if c in disp_filt.columns]
+            if cols:
+                mask = False
+                for c in cols:
+                    part = disp_filt[c].astype(str).str.lower().str.contains(q, na=False)
+                    mask = (mask | part) if isinstance(mask, pd.Series) else part
+                disp_filt = disp_filt[mask]
+        books_sel = st.session_state.get("picker_book_multi") or []
+        if books_sel and "book" in disp_filt.columns:
+            disp_filt = disp_filt[disp_filt["book"].isin(books_sel)]
+        dcut = st.session_state.get("picker_date_cut", date.today())
+        disp_filt = disp_filt[disp_filt.apply(_row_game_date, axis=1).ge(dcut)]
+
+        # ---------- Render + add ----------
+        st.caption("Preview: edges available (filtered)")
+        st.dataframe(disp_filt.head(200), use_container_width=True, hide_index=True)
+        work = disp_filt.copy()
+        work.insert(0, "add", False)
+        edited = st.data_editor(work, use_container_width=True, hide_index=True, num_rows="dynamic", key="edges_editor")
+
+        cA, cB, cC = st.columns([1,1,1])
+        with cA:
+            if st.button("➕ Add selected rows to Parlay"):
+                add_rows = edited[edited["add"] == True]
+                if add_rows.empty:
+                    st.warning("No rows selected.")
+                else:
+                    def row_key(r):
+                        return (str(r.get("game_id")), str(r.get("market")), str(r.get("side")),
+                                str(r.get("line")), str(r.get("book")), str(r.get("odds")))
+                    base = edges_df.copy()
+                    base["__key__"] = base.apply(lambda r: row_key(r), axis=1)
+                    to_add, added = [], 0
+                    for _, r in add_rows.iterrows():
+                        k = row_key(r)
+                        match = base[base["__key__"] == k]
+                        if not match.empty:
+                            full = match.iloc[0].to_dict()
+                            to_add.append({
+                                "game_id": full.get("game_id"),
+                                "market":  full.get("market"),
+                                "side":    full.get("side"),
+                                "line":    full.get("line"),
+                                "book":    full.get("book"),
+                                "odds":    int(str(full.get("odds")).replace("+","")) if pd.notna(full.get("odds")) else None,
+                                "p_win":   full.get("p_win"),
+                                "ref":     full.get("ref") if pd.notna(full.get("ref")) else uuid.uuid4().hex[:8],
+                            })
+                    cur = st.session_state.get("picked_legs", [])
+                    exists = set((str(x.get("game_id")), str(x.get("market")), str(x.get("side")),
+                                  str(x.get("line")), str(x.get("book")), str(x.get("odds"))) for x in cur)
+                    for leg in to_add:
+                        k = (str(leg.get("game_id")), str(leg.get("market")), str(leg.get("side")),
+                             str(leg.get("line")), str(leg.get("book")), str(leg.get("odds")))
+                        if k not in exists:
+                            cur.append(leg); exists.add(k); added += 1
+                    st.session_state["picked_legs"] = cur
+                    st.success(f"Added {added} leg(s) to builder.")
+                    st.rerun()
+        with cB:
+            if st.button("🧹 Deduplicate current legs"):
+                cur = st.session_state.get("picked_legs", [])
+                seen, out = set(), []
+                for leg in cur:
+                    k = (str(leg.get("game_id")), str(leg.get("market")), str(leg.get("side")),
+                         str(leg.get("line")), str(leg.get("book")), str(leg.get("odds")))
+                    if k in seen: continue
+                    seen.add(k); out.append(leg)
+                st.session_state["picked_legs"] = out
+                st.success(f"Deduped → {len(out)} unique legs.")
+                st.rerun()
+        with cC:
+            if st.button("↩️ Remove last leg"):
+                cur = st.session_state.get("picked_legs", [])
+                if cur:
+                    cur.pop()
+                    st.session_state["picked_legs"] = cur
+                    st.rerun()
+
+# ----------------------------- add a custom leg (interactive market switch) -----------------------------
+with st.expander("Add a custom leg", expanded=False):
+    mkt_choice = st.radio("Market", ["Moneyline","Spread","Total (O/U)","Prop"], horizontal=True, key="manual_mkt_choice")
+    c_odds = st.number_input("American odds", step=5, value=+100)
+    c_pwin = st.number_input("Win probability (0-1, optional)", step=0.01, min_value=0.0, max_value=1.0, value=0.0)
+    c_ref  = st.text_input("Ref (optional)", value="")
+    leg = None
+    if mkt_choice == "Moneyline":
+        side_team = st.text_input("Team / Side (e.g., Dolphins)", "")
+        if st.button("➕ Add Moneyline leg"):
+            leg = {"game_id": None, "market": "Moneyline", "side": side_team.strip(), "line": None, "book": None,
+                   "odds": int(c_odds), "p_win": (c_pwin if c_pwin > 0 else None), "ref": (c_ref.strip() or uuid.uuid4().hex[:8])}
+    elif mkt_choice == "Spread":
+        cs1, cs2 = st.columns([2,1])
+        with cs1: side_team = st.text_input("Team / Side (e.g., Dolphins)", "")
+        with cs2: line_txt = st.text_input("Spread (e.g., -3.5)", "")
+        if st.button("➕ Add Spread leg"):
+            leg = {"game_id": None, "market": "Spread", "side": side_team.strip(), "line": (line_txt if line_txt != "" else None),
+                   "book": None, "odds": int(c_odds), "p_win": (c_pwin if c_pwin > 0 else None), "ref": (c_ref.strip() or uuid.uuid4().hex[:8])}
+    elif mkt_choice == "Total (O/U)":
+        ct1, ct2, _ = st.columns([1,1,1])
+        with ct1: ou = st.selectbox("O/U", ["Over","Under"], index=0)
+        with ct2: total_line = st.number_input("Total line", step=0.5, value=45.5)
+        if st.button("➕ Add Total (O/U) leg"):
+            leg = {"game_id": None, "market": "Total", "side": ou, "line": total_line, "book": None,
+                   "odds": int(c_odds), "p_win": (c_pwin if c_pwin > 0 else None), "ref": (c_ref.strip() or uuid.uuid4().hex[:8])}
+    else:
+        cp1, cp2, cp3, cp4 = st.columns([1.4,1,1,1])
+        with cp1: player = st.text_input("Player", "")
+        with cp2: stat = st.selectbox("Stat", ["Points","Rebounds","Assists","Yards","Rush Yds","Rec Yds","Pass Yds","Other"], index=0)
+        with cp3: ou = st.selectbox("O/U", ["Over","Under"], index=0)
+        with cp4: prop_line = st.number_input("Line", step=0.5, value=20.5)
+        if st.button("➕ Add Prop leg"):
+            side_str = f"{ou} {player.strip()} {stat}".strip()
+            leg = {"game_id": None, "market": f"Prop: {stat}", "side": side_str, "line": prop_line, "book": None,
+                   "odds": int(c_odds), "p_win": (c_pwin if c_pwin > 0 else None), "ref": (c_ref.strip() or uuid.uuid4().hex[:8])}
+    if leg is not None:
+        cur = st.session_state.get("picked_legs", [])
+        cur.append(leg); st.session_state["picked_legs"] = cur
+        st.success(f"{leg['market']} leg added."); st.rerun()
+
+# ----------------------------- correlation guard -----------------------------
+with st.expander("Validate current parlay (correlation guard)", expanded=False):
+    legs = st.session_state.get("picked_legs", [])
+    if not legs:
+        st.info("No legs picked yet.")
+    else:
+        ok, msg = _normalize_corr_result(check_correlation(legs))
+        if ok: st.success("✅ Correlation OK")
+        else:  st.error(f"❌ Correlation guard blocked this parlay:\n\n{msg}")
+
+# ----------------------------- reload edges -----------------------------
+with st.expander("🔁 Reload suggestions", expanded=False):
+    if st.button("Reload now"):
+        try:
+            edges_path = _pick_latest_edges()
+            edges_df = pd.read_csv(edges_path)
+            st.success(f"Reloaded edges from {edges_path.name} ({len(edges_df)} rows)")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Reload failed: {e}")
+
+# ----------------------------- computer suggestions -----------------------------
+st.subheader("🤖 Computer Suggested Parlays")
+MAX_SUGGESTIONS = 5
+MIN_LEGS, MAX_LEGS = 3, 5
+TARGET_DEC_MIN, TARGET_DEC_MAX = 6.5, 8.75  # ≈ +550 to +875
+counter = itertools.count()
+best = []  # min-heap of (-EV, tie, item)
+
+def try_push(legs_combo):
+    # Enforce same-book parlays
+    books = {str(lg.get("book") or "").strip() for lg in legs_combo}
+    if len(books) != 1 or ("" in books):
+        return
+    ok, _ = _normalize_corr_result(check_correlation(legs_combo))
+    if not ok:
+        return
+    dec, am, p, ev = parlay_stats(legs_combo)
+    if dec < TARGET_DEC_MIN or dec > TARGET_DEC_MAX:
+        return
+    item = {"legs": legs_combo, "parlay_decimal": dec, "parlay_american": am,
+            "parlay_p_win": p, "parlay_ev": ev, "book": list(books)[0]}
+    heapq.heappush(best, (-ev, next(counter), item))
+    if len(best) > MAX_SUGGESTIONS:
+        heapq.heappop(best)
+
+# Build suggestions from the filtered pool (respects filters)
+if "disp_filt" in locals() and isinstance(disp_filt, pd.DataFrame) and not disp_filt.empty:
+    pool_records = disp_filt.to_dict("records")
+    from itertools import combinations
+    for r in range(MIN_LEGS, MAX_LEGS+1):
+        for combo in combinations(pool_records, r):
+            try_push(list(combo))
+
+    suggestions = [heapq.heappop(best)[2] for _ in range(len(best))]
+    suggestions.reverse()
+    for j, s in enumerate(suggestions, start=1):
+        title = (f"Suggestion #{j}: {len(s['legs'])} legs | "
+                 f"{('+' if s['parlay_american']>0 else '')}{int(s['parlay_american'])} "
+                 f"| EV {s['parlay_ev']:+.3f} | Book: {s.get('book','—')}")
+        with st.expander(title):
+            _df = pd.DataFrame(s["legs"])
+            st.dataframe(_df, use_container_width=True, hide_index=True)
+            u, l = st.columns(2)
+            with u:
+                if st.button(f"➕ Use Suggestion #{j}", key=f"use_sugg_{j}"):
+                    st.session_state["picked_legs"] = list(s["legs"]); st.success("Loaded."); st.rerun()
+            with l:
+                if st.button(f"📝 Log Suggestion #{j}", key=f"log_sugg_{j}"):
+                    try:
+                        row = log_parlay(s["legs"], s["parlay_american"], s["parlay_p_win"], s["parlay_ev"], tag="suggested", notes=f"suggestion#{j}")
+                        st.success(f"Logged (ID: {row['parlay_id']})")
+                    except Exception as e:
+                        st.error(f"Failed to log suggestion #{j}: {e}")
+else:
+    st.info("No edges available to generate suggestions. Provide edges.csv or market_lines*.csv in exports/.")

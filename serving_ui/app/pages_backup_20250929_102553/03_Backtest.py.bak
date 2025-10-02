@@ -1,0 +1,591 @@
+from __future__ import annotations
+import streamlit as st
+from app.lib.auth import login, show_logout
+# === Auth (auto-injected) ===
+import streamlit as st  # ensured
+from app.lib.auth import login, show_logout
+
+auth = login(required=False)   # or required=True for protected pages
+if not auth.authenticated:
+    st.info("You are in read-only mode.")
+show_logout()  # sidebar logout
+# === /Auth (auto-injected) ===
+# -*- coding: utf-8 -*-
+# 03_Backtest.py — Backtest / Scores Browser (settles H2H, Spreads, Totals)
+
+import os
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+
+st.set_page_config(page_title="Backtest — Scores Browser", layout="wide")
+BUILD_TAG = "backtest-clean-v1"
+
+# ====================== Utilities ======================
+
+def _here() -> Path:
+    return Path(__file__).resolve()
+
+@st.cache_data(show_spinner=False)
+def _exports_dir() -> Path:
+    """Find the repo exports directory.
+    Prefers repo_root/exports; falls back to app/exports; ensures it exists."""
+    here = _here()
+    # search upward for repo root named 'edge-finder'
+    for up in [here.parent] + list(here.parents):
+        if up.name.lower() == "edge-finder":
+            p = up / "exports"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    # fallback: sibling exports next to this file
+    p = here.parent / "exports"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+# --- string helpers
+
+def _s(x) -> pd.Series:
+    if isinstance(x, pd.Series):
+        return x.astype("string").fillna("")
+    return pd.Series([x], dtype="string")
+
+ALIAS = {
+    "REDSKINS": "COMMANDERS", "WASHINGTON": "COMMANDERS", "FOOTBALL": "COMMANDERS",
+    "OAKLAND": "RAIDERS", "LV": "RAIDERS", "LAS": "RAIDERS", "VEGAS": "RAIDERS",
+    "SD": "CHARGERS", "STL": "RAMS",
+}
+
+@st.cache_data(show_spinner=False)
+def _nickify(series: pd.Series) -> pd.Series:
+    s = _s(series).str.upper().str.replace(r"[^A-Z0-9 ]+", "", regex=True).str.strip().replace(ALIAS)
+    return s.str.replace(r"\s+", "_", regex=True)
+
+@st.cache_data(show_spinner=False)
+def _as_str_series(df: pd.DataFrame, *cands: str, default: str = "") -> pd.Series:
+    for c in cands:
+        if c in df.columns:
+            return _s(df[c])
+    return pd.Series([default] * len(df), index=df.index, dtype="string")
+
+# ====================== Load Data ======================
+
+@st.cache_data(show_spinner=True)
+def load_edges_scores(edges_path: Path|None=None, scores_path: Path|None=None):
+    exp = _exports_dir()
+    edges_path = edges_path or (exp / "edges_graded_full_normalized_std.csv")
+    scores_path = scores_path or (exp / "scores_1966-2025.csv")
+
+    edges = pd.read_csv(edges_path)
+    scores = pd.read_csv(scores_path)
+    return edges, scores
+
+# ====================== Join / Attach Scores ======================
+
+@st.cache_data(show_spinner=True)
+def attach_scores(edges: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    e = edges.copy()
+    sc = scores.copy()
+
+    # normalize nicknames
+    for col in ("_home_nick", "home", "home_team", "home_nick"):
+        if col in e.columns:
+            e["_home_nick"] = _nickify(e[col])
+            break
+    for col in ("_away_nick", "away", "away_team", "away_nick"):
+        if col in e.columns:
+            e["_away_nick"] = _nickify(e[col])
+            break
+
+    for col in ("_home_nick", "home", "home_team", "home_nick"):
+        if col in sc.columns:
+            sc["_home_nick"] = _nickify(sc[col])
+            break
+    for col in ("_away_nick", "away", "away_team", "away_nick"):
+        if col in sc.columns:
+            sc["_away_nick"] = _nickify(sc[col])
+            break
+def _num_int(series: pd.Series) -> pd.Series:
+    """Coerce to nullable Int64 without choking on '', ' ', or bad values."""
+    return pd.to_numeric(series, errors="coerce").astype("Int64")
+
+    # normalize date iso
+    e_date = _as_str_series(e, "_date_iso", "date", "game_date")
+    sc_date = _as_str_series(sc, "_date_iso", "date", "game_date")
+
+    # build forward and swapped keys
+    def make_keys(df, date_s):
+        # be robust: do not assume _home_nick/_away_nick exist yet
+        home = _as_str_series(df, "_home_nick", "home", "home_team",
+                              "home_nick", "team_home", "home_name")
+        away = _as_str_series(df, "_away_nick", "away", "away_team",
+                              "away_nick", "team_away", "away_name")
+        home = _nickify(home)
+        away = _nickify(away)
+        k_fw = date_s + "|" + home + "|" + away
+        k_sw = date_s + "|" + away + "|" + home
+        return k_fw, k_sw
+
+
+
+    e_k_fw, e_k_sw = make_keys(e, e_date)
+    sc_k_fw, _ = make_keys(sc, sc_date)
+
+    sc_key_map = pd.DataFrame({
+    "sc_key": sc_k_fw,
+    # scores columns (robust name candidates + safe numeric coercion)
+    "home_score": _num_int(_as_str_series(sc, "home_score","HomeScore","home_score_final","home_pts","HomeScoreFinal")),
+    "away_score": _num_int(_as_str_series(sc, "away_score","AwayScore","away_score_final","away_pts","AwayScoreFinal")),
+    # carry season/week/date when available
+    "season": _num_int(_as_str_series(sc, "season","Season")),
+    "week":   _num_int(_as_str_series(sc, "week","Week")),
+    "_date_iso_sc": _as_str_series(sc, "_date_iso","date","game_date"),
+})
+
+
+    # try forward match
+    e["_join_key"] = e_k_fw
+    merged = e.merge(sc_key_map, how="left", left_on="_join_key", right_on="sc_key")
+
+    # fill missing via swapped
+    missing = merged["home_score"].isna() | merged["away_score"].isna()
+    if missing.any():
+        e_tmp = e.loc[missing].copy()
+        e_tmp["_join_key_sw"] = e_k_sw.loc[missing]
+        sc2 = sc_key_map.rename(columns={"sc_key": "_join_key_sw", "home_score": "home_score_sw", "away_score": "away_score_sw"})
+        sw = e_tmp.merge(sc2, how="left", on="_join_key_sw")
+        # assign back, swapping scores accordingly
+        merged.loc[missing, "home_score"] = sw["away_score_sw"].to_numpy()  # note: swap
+        merged.loc[missing, "away_score"] = sw["home_score_sw"].to_numpy()
+        # carry season/week/date as-is from scores (no swap needed)
+        for _c_src, _c_dst in [("season", "season"), ("week", "week"), ("_date_iso_sc", "_date_iso_sc")]:
+            if _c_src in sc2.columns:
+                merged.loc[missing, _c_dst] = sw[_c_src].to_numpy()
+
+    # compute totals
+    merged["total_points"] = (merged["home_score"].astype("Float64") + merged["away_score"].astype("Float64"))
+
+    # ensure season exists (fallback from date if not present)
+    if "season" not in merged.columns or merged["season"].isna().all():
+        # derive from _date_iso: football season rolls over in Jan-Feb
+        dt = pd.to_datetime(_as_str_series(merged, "_date_iso", "_date_iso_sc"), errors="coerce")
+        yr = dt.dt.year
+        mo = dt.dt.month
+        merged["season"] = (yr - (mo <= 2).astype("int64")).astype("Int64")
+
+    return merged
+
+# ====================== Settle Bets ======================
+
+@st.cache_data(show_spinner=False)
+def settle_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Adds settlement columns for H2H, SPREADS, TOTALS.
+    Expects columns: market_norm, side_norm, line (numeric), home_score, away_score
+    Outputs: _settled (bool), _result (WIN/LOSS/PUSH/NA)"""
+    out = df.copy()
+    m = _as_str_series(out, "market_norm", "market")
+    s = _as_str_series(out, "side_norm", "side")
+
+    # numeric line (allow NA)
+    try:
+        line = pd.to_numeric(out.get("line"), errors="coerce")
+    except Exception:
+        line = pd.Series([np.nan] * len(out))
+
+    hs = pd.to_numeric(out.get("home_score"), errors="coerce")
+    as_ = pd.to_numeric(out.get("away_score"), errors="coerce")
+
+    settled = hs.notna() & as_.notna()
+
+    result = pd.Series(["NA"] * len(out), dtype="string")
+
+    # H2H
+    is_h2h = m.str.upper().str.contains("H2H") | m.str.upper().str.contains("MONEY") | (m.str.upper() == "H2H")
+    home_win = hs > as_
+    away_win = as_ > hs
+
+    result.loc[is_h2h & s.str.upper().eq("HOME") & home_win] = "WIN"
+    result.loc[is_h2h & s.str.upper().eq("HOME") & away_win] = "LOSS"
+    result.loc[is_h2h & s.str.upper().eq("AWAY") & away_win] = "WIN"
+    result.loc[is_h2h & s.str.upper().eq("AWAY") & home_win] = "LOSS"
+
+    # SPREADS
+    is_spread = m.str.upper().str.contains("SPREAD")
+    margin = (hs - as_)
+    # home side means lay/take points with home; win if margin - line > 0
+    result.loc[is_spread & s.str.upper().eq("HOME") & ((margin - line) > 0)] = "WIN"
+    result.loc[is_spread & s.str.upper().eq("HOME") & ((margin - line) < 0)] = "LOSS"
+    result.loc[is_spread & s.str.upper().eq("HOME") & ((margin - line) == 0)] = "PUSH"
+    # away
+    result.loc[is_spread & s.str.upper().eq("AWAY") & ((-margin - line) > 0)] = "WIN"  # away margin is -margin
+    result.loc[is_spread & s.str.upper().eq("AWAY") & ((-margin - line) < 0)] = "LOSS"
+    result.loc[is_spread & s.str.upper().eq("AWAY") & ((-margin - line) == 0)] = "PUSH"
+
+    # TOTALS
+    is_totals = m.str.upper().str.contains("TOTAL") | m.str.upper().str.contains("OU")
+    total = hs + as_
+    result.loc[is_totals & s.str.upper().eq("OVER") & (total > line)] = "WIN"
+    result.loc[is_totals & s.str.upper().eq("OVER") & (total < line)] = "LOSS"
+    result.loc[is_totals & s.str.upper().eq("OVER") & (total == line)] = "PUSH"
+    result.loc[is_totals & s.str.upper().eq("UNDER") & (total < line)] = "WIN"
+    result.loc[is_totals & s.str.upper().eq("UNDER") & (total > line)] = "LOSS"
+    result.loc[is_totals & s.str.upper().eq("UNDER") & (total == line)] = "PUSH"
+
+    out["_settled"] = settled
+    out["_result"] = result.where(settled, other="NA")
+
+    return out
+
+# ====================== UI ======================
+
+st.title("Backtest — Scores Browser")
+st.caption(f"Build: {BUILD_TAG}")
+
+exp = _exports_dir()
+st.write(f"**Exports dir:** {exp}")
+
+edges, scores = load_edges_scores()
+st.success(f"Loaded edges={len(edges):,}  •  scores={len(scores):,}")
+
+# Quick peek controls
+with st.expander("Preview raw inputs", expanded=False):
+    st.subheader("Edges (first 20)")
+    st.dataframe(edges.head(20), use_container_width=True)
+    st.subheader("Scores (first 20)")
+    st.dataframe(scores.head(20), use_container_width=True)
+
+# Build joined first
+joined = attach_scores(edges, scores)
+
+# ---- Filters: Season / Week ----
+with st.expander("Filter: Season / Week", expanded=True):
+    # Seasons (numeric, sorted)
+    seasons = []
+    if "season" in joined.columns:
+        _s = pd.to_numeric(joined["season"], errors="coerce").dropna().astype("int64")
+        seasons = sorted(_s.unique().tolist())
+
+    if seasons:
+        sel_season = st.selectbox(
+            "Season",
+            options=seasons,
+            index=len(seasons) - 1,
+            help="Football season (year where regular season begins)",
+        )
+        joined = joined[pd.to_numeric(joined["season"], errors="coerce") == sel_season].copy()
+
+        # Weeks (only show if present after season filter)
+        weeks = []
+        if "week" in joined.columns and joined["week"].notna().any():
+            _w = pd.to_numeric(joined["week"], errors="coerce").dropna().astype("int64")
+            weeks = sorted(_w.unique().tolist())
+
+        if weeks:
+            sel_weeks = st.multiselect(
+                "Weeks",
+                options=weeks,
+                default=weeks,
+                help="Limit to specific weeks if available in scores",
+            )
+            if sel_weeks:
+                joined = joined[pd.to_numeric(joined["week"], errors="coerce").isin(sel_weeks)].copy()
+
+
+# ---- Settle & Analyze (now that `joined` exists / filtered) ----
+st.header("Settle & Analyze")
+base = joined.copy()
+
+# settle
+base = settle_rows(base)
+
+left, right = st.columns([1,1])
+with left:
+    st.metric("Rows joined", f"{len(base):,}")
+    st.metric("With scores", f"{int(base['_settled'].sum()):,}")
+with right:
+    by_res = base["_result"].value_counts(dropna=False).rename_axis("result").reset_index(name="n")
+    st.dataframe(by_res, use_container_width=True)
+
+only_settled = st.toggle("Show only settled", value=True)
+if only_settled:
+    view = base[base["_settled"]].copy()
+else:
+    view = base.copy()
+
+# helpful columns first if present
+pref = [c for c in ["_date_iso","_home_nick","_away_nick","market_norm","side_norm","line","home_score","away_score","total_points","_result"] if c in view.columns]
+cols = pref + [c for c in view.columns if c not in pref]
+view = view[cols]
+
+st.subheader("Results")
+st.dataframe(view, use_container_width=True)
+
+# ====================== Metrics ======================
+st.subheader("Metrics")
+metrics_view = view.copy()
+
+# Mark rows that have scores
+if "_settled" in metrics_view.columns:
+    metrics_view["_joined_with_scores"] = metrics_view["_settled"].astype(bool)
+else:
+    metrics_view["_joined_with_scores"] = metrics_view[["home_score","away_score"]].notna().all(axis=1)
+
+# helper: market normalization (fallback to existing market_norm)
+def _market_norm(series: pd.Series) -> pd.Series:
+    s = _as_str_series(pd.DataFrame({"m": series}), "m")
+    s = s.str.upper()
+    s = s.str.replace("MONEYLINE", "H2H", regex=False)
+    s = s.str.replace("MONEY", "H2H", regex=False)
+    s = s.str.replace("ML", "H2H", regex=False)
+    s = s.str.replace("SPREADS", "SPREADS", regex=False)
+    s = s.str.replace("TOTALS", "TOTALS", regex=False)
+    return s
+
+# helper: pick team nick (HOME/AWAY for H2H & SPREADS)
+def _pick_team_series(df: pd.DataFrame) -> pd.Series:
+    m = _as_str_series(df, "market_norm", "market").str.upper()
+    s = _as_str_series(df, "side_norm", "side").str.upper()
+    home = _as_str_series(df, "_home_nick", "home", "home_team")
+    away = _as_str_series(df, "_away_nick", "away", "away_team")
+    pick = pd.Series(["" for _ in range(len(df))], index=df.index, dtype="string")
+    is_h2h = m.str.contains("H2H")
+    is_spread = m.str.contains("SPREAD")
+    pick.loc[(is_h2h | is_spread) & s.eq("HOME")] = home
+    pick.loc[(is_h2h | is_spread) & s.eq("AWAY")] = away
+    # totals have no team
+    return pick
+
+# helper: profit per $1 using decimal or american odds if available
+def _american_to_decimal(american: pd.Series) -> pd.Series:
+    a = pd.to_numeric(american, errors="coerce")
+    dec = pd.Series(np.nan, index=a.index)
+    pos = a > 0
+    neg = a < 0
+    dec.loc[pos] = 1 + (a.loc[pos] / 100.0)
+    dec.loc[neg] = 1 + (100.0 / (-a.loc[neg]))
+    return dec
+
+def _profit_per_dollar(df: pd.DataFrame) -> pd.Series:
+    # prefer decimal odds; else from american price; else NaN
+    if "decimal" in df.columns:
+        dec = pd.to_numeric(df["decimal"], errors="coerce")
+    elif "odds" in df.columns and df["odds"].dtype.kind in "fiu":
+        dec = pd.to_numeric(df["odds"], errors="coerce")
+    else:
+        dec = _american_to_decimal(df.get("price"))
+    res = _as_str_series(df, "_result")
+    prof = pd.Series(np.nan, index=df.index, dtype="float")
+    # + (dec-1) on win, 0 on push, -1 on loss
+    prof.loc[res.eq("WIN")] = (dec - 1).loc[res.eq("WIN")]
+    prof.loc[res.eq("PUSH")] = 0.0
+    prof.loc[res.eq("LOSS")] = -1.0
+    return prof
+
+if len(metrics_view):
+    settled_view = metrics_view.copy()
+    # ensure normalized market and pick columns
+    if "market_norm" not in settled_view.columns:
+        settled_view["market_norm"] = _market_norm(settled_view.get("market", pd.Series([""] * len(settled_view))))
+    if "_pick_nick" not in settled_view.columns or settled_view["_pick_nick"].eq("").all():
+        settled_view["_pick_nick"] = _pick_team_series(settled_view)
+
+    # team performance (by picked team)
+    tp = settled_view.copy()
+    tp["_profit_per_$1"] = _profit_per_dollar(tp)
+
+    team_tbl = tp.assign(
+        is_win = tp["_result"].eq("WIN"),
+        is_loss= tp["_result"].eq("LOSS"),
+        is_push= tp["_result"].eq("PUSH"),
+    ).groupby("_pick_nick", dropna=False).agg(
+        bets=("market_norm", "size"),
+        wins=("is_win","sum"),
+        losses=("is_loss","sum"),
+        pushes=("is_push","sum"),
+        profit=("_profit_per_$1","sum"),
+        roi_per_bet=("_profit_per_$1","mean"),
+    ).reset_index().rename(columns={"_pick_nick":"team"}).sort_values("profit", ascending=False)
+
+    st.markdown("**Team performance (picked side)**")
+    st.dataframe(team_tbl, use_container_width=True)
+
+    # bet-type breakdown
+    sett = settled_view.copy()
+    sett["_profit_per_$1"] = _profit_per_dollar(sett)
+    grp = sett.groupby("market_norm", dropna=False)
+    bets = grp.size().rename("bets")
+
+    res_mat = grp["_result"].value_counts().unstack(fill_value=0)
+    for col in ["WIN", "LOSS", "PUSH"]:
+        if col not in res_mat.columns:
+            res_mat[col] = 0
+    wins   = res_mat["WIN"].rename("wins")
+    losses = res_mat["LOSS"].rename("losses")
+    pushes = res_mat["PUSH"].rename("pushes")
+
+    profit_sum = grp["_profit_per_$1"].sum(min_count=1).rename("profit")
+    roi_mean   = grp["_profit_per_$1"].mean().rename("roi_per_bet")
+
+    bt = (
+        pd.concat([bets, wins, losses, pushes, profit_sum, roi_mean], axis=1)
+          .reset_index()
+          .rename(columns={"market_norm": "market"})
+          .sort_values("profit", ascending=False)
+    )
+
+    st.markdown("**Bet-type breakdown**")
+    st.dataframe(bt, use_container_width=True)
+
+st.info("Metrics assume $1 flat stakes per pick and compute profit from available decimal odds or American price.")
+# ensure settled_view exists even if metrics_view is empty
+try:
+    settled_view
+except NameError:
+    settled_view = view.copy()
+
+# ====================== Singles vs Parlays ======================
+# We support both leg-level and ticket-level metrics.
+# Ticket inference priorities: ticket_id > parlay_id > bet_id; else treat each row as its own single.
+
+def _american_to_decimal(american: pd.Series) -> pd.Series:
+    a = pd.to_numeric(american, errors="coerce")
+    dec = pd.Series(np.nan, index=a.index)
+    pos = a > 0
+    neg = a < 0
+    dec.loc[pos] = 1 + (a.loc[pos] / 100.0)
+    dec.loc[neg] = 1 + (100.0 / (-a.loc[neg]))
+    return dec
+
+_def_ticket_cols = ("ticket_id","parlay_id","bet_id","cart_id","combo_id")
+
+def _infer_ticket_id(df: pd.DataFrame) -> pd.Series:
+    for c in _def_ticket_cols:
+        if c in df.columns:
+            s = _as_str_series(df, c)
+            if s.notna().any() and (s != "").any():
+                return s
+    # no known id — assume each leg is its own ticket (single)
+    return pd.Series([f"_single_{i}" for i in range(len(df))], index=df.index, dtype="string")
+
+# decimal odds per leg (prefer decimal/odds; else convert price)
+
+def _decimal_series(df: pd.DataFrame) -> pd.Series:
+    if "decimal" in df.columns:
+        dec = pd.to_numeric(df["decimal"], errors="coerce")
+    elif "odds" in df.columns and df["odds"].dtype.kind in "fiu":
+        dec = pd.to_numeric(df["odds"], errors="coerce")
+    else:
+        dec = _american_to_decimal(df.get("price"))
+    return dec
+
+# Build tickets dataframe with profit per $1 stake
+
+def _tickets_from_legs(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["ticket_id","legs","wins","losses","pushes","result","decimal_payout","profit_per_$1"])    
+    work = df.copy()
+    work["ticket_id"] = _infer_ticket_id(work)
+    work["dec"] = _decimal_series(work)
+
+    def _agg_ticket(g: pd.DataFrame) -> pd.Series:
+        legs = len(g)
+        wins = int((g["_result"] == "WIN").sum())
+        losses = int((g["_result"] == "LOSS").sum())
+        pushes = int((g["_result"] == "PUSH").sum())
+        if losses > 0:
+            return pd.Series({
+                "legs": legs, "wins": wins, "losses": losses, "pushes": pushes,
+                "result": "LOSS", "decimal_payout": 0.0, "profit_per_$1": -1.0,
+            })
+        # product of win legs; push legs multiply by 1
+        decs = g.loc[g["_result"].isin(["WIN","PUSH"]), "dec"].copy()
+        # replace NaN with 1 for PUSH only; for WIN legs, NaN → NaN product
+        decs.loc[g["_result"] == "PUSH"] = decs.loc[g["_result"] == "PUSH"].fillna(1.0)
+        if decs[g["_result"].eq("WIN")].isna().any():
+            payout = np.nan
+            profit = np.nan
+            result = "WIN"  # structurally a winner but unknown payout
+        else:
+            payout = float(np.prod(decs.fillna(1.0))) if len(decs) else 1.0
+            profit = payout - 1.0
+            result = "PUSH" if wins == 0 and pushes > 0 else "WIN"
+        return pd.Series({
+            "legs": legs, "wins": wins, "losses": losses, "pushes": pushes,
+            "result": result, "decimal_payout": payout, "profit_per_$1": profit,
+        })
+
+    tix = work.groupby("ticket_id", dropna=False).apply(_agg_ticket).reset_index()
+    return tix
+
+st.subheader("Singles vs Parlays")
+legs = settled_view.copy()
+legs["ticket_id"] = _infer_ticket_id(legs)
+
+# classify legs
+sizes = legs.groupby("ticket_id").size()
+leg_sizes = legs["ticket_id"].map(sizes)
+legs["_is_parlay_leg"] = leg_sizes.gt(1)
+
+# Tabs for leg-level breakdown
+try:
+    tab_all, tab_s, tab_p, tab_tix = st.tabs(["Legs — All", "Legs — Singles", "Legs — Parlays", "Tickets (Parlays)"])
+except Exception:
+    # older streamlit fallback
+    tab_all = tab_s = tab_p = tab_tix = st
+
+with tab_all:
+    st.caption("All legs (singles and parlay legs combined)")
+    st.dataframe(legs, use_container_width=True)
+
+with tab_s:
+    st.caption("Single bets (tickets with 1 leg)")
+    single_legs = legs[~legs["_is_parlay_leg"]].copy()
+    st.dataframe(single_legs, use_container_width=True)
+
+with tab_p:
+    st.caption("Parlay legs only (tickets with >1 legs)")
+    parlay_legs = legs[legs["_is_parlay_leg"]].copy()
+    st.dataframe(parlay_legs, use_container_width=True)
+
+with tab_tix:
+    st.caption("Ticket-level metrics for parlays (profit per $1 stake)")
+    tix = _tickets_from_legs(legs)
+    # show only multi-leg tickets in this tab
+    tix_view = tix[tix["legs"].gt(1)].copy()
+    st.dataframe(tix_view.sort_values(["profit_per_$1","decimal_payout"], ascending=False), use_container_width=True)
+
+st.info("Singles are tickets with 1 leg. Parlays are tickets with >1 legs. Ticket profit assumes $1 flat stake per ticket, multiplies decimal odds for winning legs, treats pushes as 1.0, and any loss voids the ticket.")
+
+# ====================== Optional Export ======================
+import csv
+if st.button("Export current view → exports/edges_joined_view.csv"):
+    out_path = exp / "edges_joined_view.csv"
+    view.to_csv(out_path, index=False, quoting=csv.QUOTE_NONNUMERIC, encoding="utf-8-sig")
+    st.toast(f"Wrote {out_path}", icon="✅")
+
+# --- _EF_DIAG_SNAPSHOT_ (auto-added) ---
+try:
+    import pandas as _ef_pd
+    from pathlib import Path as _ef_Path
+    _ef = locals().get("diag", None)
+    if _ef:
+        for _nm in ("edges_p","live_p","oc_path","edges_path","live_path","scores_path","scores_p","epath","spath","_lines_p","_edges_p"):
+            _p = locals().get(_nm, None)
+            if _p:
+                try: _ef.check_file(_ef_Path(str(_p)), required=False, label=_nm)
+                except Exception: pass
+        for _dfn in ("edges","live","oc","scores","joined","view"):
+            _df = locals().get(_dfn, None)
+            try:
+                if isinstance(_df, _ef_pd.DataFrame):
+                    _ef.log_df(_df, _dfn)
+            except Exception:
+                pass
+except Exception:
+    pass
+# --- /_EF_DIAG_SNAPSHOT_ ---
+
+
+
+

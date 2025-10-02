@@ -1,0 +1,90 @@
+from __future__ import annotations
+import sys
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+# Resolve repo root and exports
+HERE = Path(__file__).resolve()
+APP_DIR = HERE.parents[1]           # .../serving_ui/app
+REPO_DIR = APP_DIR.parents[1]       # repo root
+EXPORTS = REPO_DIR / "exports"
+BETLOG  = EXPORTS / "bets_log.csv"
+
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
+
+st.set_page_config(page_title="Backtest • Calculated Risk", page_icon="🧪", layout="wide")
+st.title("🧪 Backtest")
+
+@st.cache_data
+def _read_csv_safe(p: Path) -> pd.DataFrame:
+    try:
+        if not p.exists() or p.stat().st_size == 0:
+            return pd.DataFrame()
+        df = pd.read_csv(p)
+        df.columns = [c.strip().lower() for c in df.columns]
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def american_to_decimal(odds: float) -> float:
+    o = float(odds)
+    return 1.0 + (o/100.0 if o > 0 else 100.0/abs(o))
+
+def settle_row(r) -> tuple[float, bool]:
+    try:
+        stake = float(r.get("stake", 0) if hasattr(r, "get") else r["stake"])
+        odds  = float(r.get("odds", 0)  if hasattr(r, "get") else r["odds"])
+        res   = str((r.get("result","") if hasattr(r,"get") else r["result"]) or "").lower()
+        dec   = american_to_decimal(odds)
+        if res in ("win","won","w"):   return stake * (dec - 1.0), True
+        if res in ("lose","lost","l"): return -stake, True
+        if res in ("push","void","cancel","canceled","cancelled"): return 0.0, True
+        return 0.0, False
+    except Exception:
+        return 0.0, False
+
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty: return df
+    x = df.copy()
+    for c in ("stake","odds","p_win"):
+        if c in x: x[c] = pd.to_numeric(x[c], errors="coerce")
+    x["placed_at"] = pd.to_datetime(x.get("placed_at"), errors="coerce") \
+                       .fillna(pd.to_datetime(x.get("ts"), errors="coerce"))
+    return x
+
+bets = normalize(_read_csv_safe(BETLOG))
+
+st.caption(f"Reading: {BETLOG}")
+
+if bets.empty:
+    st.warning("No bets found. Populate exports/bets_log.csv.")
+    st.stop()
+
+# Compute realized PnL if not precomputed
+if "pnl" not in bets.columns or pd.to_numeric(bets["pnl"], errors="coerce").fillna(0).sum() == 0:
+    pnl = []
+    for _, r in bets.iterrows():
+        v, settled = settle_row(r)
+        pnl.append(v if settled else 0.0)
+    bets["pnl"] = pnl
+
+# Summary
+total_staked = float(pd.to_numeric(bets.get("stake"), errors="coerce").fillna(0).sum())
+realized_pnl = float(pd.to_numeric(bets.get("pnl"), errors="coerce").fillna(0).sum())
+roi = (realized_pnl / total_staked) if total_staked else np.nan
+wins = (bets.get("result","").astype(str).str.lower().isin(["win","won","w"]).sum()
+        if "result" in bets else np.nan)
+losses = (bets.get("result","").astype(str).str.lower().isin(["lose","lost","l"]).sum()
+          if "result" in bets else np.nan)
+
+c1,c2,c3,c4 = st.columns(4)
+with c1: st.metric("Bets", f"{len(bets):,}")
+with c2: st.metric("Wins", f"{wins}" if wins==wins else "—")
+with c3: st.metric("Losses", f"{losses}" if losses==losses else "—")
+with c4: st.metric("ROI", f"{roi*100:.2f}%" if roi==roi else "—")
+
+st.subheader("Bet log")
+st.dataframe(bets.sort_values("placed_at").reset_index(drop=True), use_container_width=True)

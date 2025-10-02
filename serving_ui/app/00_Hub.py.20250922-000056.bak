@@ -1,0 +1,104 @@
+# ---- PATH SHIM (works whether launched from repo root, app/, or pages/) ----
+import sys, pathlib
+
+from pathlib import Path as _Path
+import os as _os, sys as _sys
+_APP_DIR = _Path(__file__).resolve().parent
+_REPO    = _APP_DIR.parents[1]  # serving_ui/app -> repo root
+if str(_REPO) not in _sys.path:
+    _sys.path.insert(0, str(_REPO))
+ASSETS = _REPO / "assets"
+LOGO   = ASSETS / "logo.png"
+HERE = pathlib.Path(__file__).resolve()
+APP_DIR = HERE.parents[1]                 # ...\serving_ui\app
+PARENT  = APP_DIR.parent                  # ...\serving_ui
+if str(PARENT) not in sys.path:
+    sys.path.insert(0, str(PARENT))
+# ---- END PATH SHIM ----
+
+# pages/00_Hub.py Ã¢â‚¬â€ resilient quick-links hub
+from pathlib import Path
+import streamlit as st
+
+from pathlib import Path as _Path
+import os as _os, sys as _sys
+_APP_DIR = _Path(__file__).resolve().parent
+_REPO    = _APP_DIR.parents[1]  # serving_ui/app -> repo root
+if str(_REPO) not in _sys.path:
+    _sys.path.insert(0, str(_REPO))
+ASSETS = _REPO / "assets"
+LOGO   = ASSETS / "logo.png"
+
+PAGES_DIR = APP_DIR / "pages"
+
+CANDIDATE_LOGOS = [
+    APP_DIR / "assets" / "logo.png",
+    APP_DIR / "assets" / "calculated_risk_logo.png",
+]
+LOGO = next((p for p in CANDIDATE_LOGOS if p.exists()), None)
+
+st.set_page_config(
+    page_title="Calculated Risk Ã¢â‚¬Â¢ Hub",
+    page_icon=str(LOGO) if LOGO else "Ã°Å¸ÂË†",
+    layout="wide",
+)
+
+# hero
+col1, col2 = st.columns([1, 3])
+with col1:
+    if LOGO:
+        st.image(str(LOGO), width=200)
+with col2:
+    try:
+    if LOGO.exists():
+        st.image(str(LOGO), width=160)
+    else:
+        st.write("**Calculated Risk**")
+except Exception:
+    st.write("**Calculated Risk**")
+try:
+    if LOGO.exists():
+        st.image(str(LOGO), width=160)
+    else:
+        st.write("**Calculated Risk**")
+except Exception:
+    st.write("**Calculated Risk**")
+st.title("Calculated Risk")
+    st.markdown("**Edge Finder Ã¢â‚¬Â¢ Betting Analytics Ã¢â‚¬Â¢ Parlay Builder**")
+
+st.divider()
+
+def safe_link(page_filename: str, label: str):
+    """Try page_link first. If registry lookup fails, fall back to a button+switch_page."""
+    target = f"pages/{page_filename}"
+    try:
+    if LOGO.exists():
+        st.image(str(LOGO), width=160)
+    else:
+        st.write("**Calculated Risk**")
+except Exception:
+    st.write("**Calculated Risk**")
+        if (PAGES_DIR / page_filename).exists():
+            if st.button(label):
+                try:
+    if LOGO.exists():
+        st.image(str(LOGO), width=160)
+    else:
+        st.write("**Calculated Risk**")
+except Exception:
+    st.write("**Calculated Risk**")
+        else:
+            st.caption(f"Ã¢â€ºâ€ missing: {target}")
+
+# quick links row
+cols = st.columns(4)
+with cols[0]: safe_link("09_Parlay_Builder.py", "Ã°Å¸Å½Â² Parlay Builder")
+with cols[1]: safe_link("06_Bet_Log.py",        "Ã°Å¸â€œÂ Bet Log")
+with cols[2]: safe_link("03_Backtest.py",       "Ã°Å¸Â§Âª Backtest")
+with cols[3]: safe_link("98_Diagnostics.py",    "Ã°Å¸â€ºÂ Ã¯Â¸Â Diagnostics")
+
+st.divider()
+with st.expander("Ã¢Å¡â„¢Ã¯Â¸Â Diagnostics"):
+    st.write("APP_DIR:", APP_DIR)
+    st.write("PAGES_DIR:", PAGES_DIR)
+    st.write("Has logo:", bool(LOGO))

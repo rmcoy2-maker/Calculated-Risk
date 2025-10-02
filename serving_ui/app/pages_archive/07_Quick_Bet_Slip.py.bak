@@ -1,0 +1,94 @@
+from pathlib import Path
+import uuid
+import pandas as pd
+import streamlit as st
+
+from serving_ui.app._layout import header
+from app.lib.betlog import append_row
+from app.lib.odds_utils import kelly_fraction, american_to_decimal
+from app.lib.bankroll import get_bankroll, get_cap_pct
+from app.lib.config import MODEL_VERSION
+
+header("Quick Bet Slip (with Model Version)")
+
+def _find_edges_csv():
+    here = Path(__file__).resolve()
+    root = here.parents[2]
+    for p in [root/"exports/edges.csv", root/"data_scaffnew/exports/edges.csv"]:
+        if p.exists() and p.stat().st_size > 0: return p
+    return None
+
+p = _find_edges_csv()
+if not p:
+    st.warning("edges.csv not found. Run your edge scanner first.")
+    st.stop()
+
+df = pd.read_csv(p)
+df.columns = [c.strip().lower() for c in df.columns]
+need = {"odds","model_p"}
+if not need.issubset(df.columns):
+    st.error("Require columns: odds, model_p")
+    st.stop()
+
+st.caption(f"New slip entries will be tagged with model_version = **{MODEL_VERSION}**")
+
+st.subheader("Pick a row")
+st.write(f"Rows available: {len(df):,}")
+row_idx = st.number_input("Row # (1-based)", 1, len(df), 1)
+row = df.iloc[row_idx-1]
+
+p_win = float(row["model_p"])
+odds  = int(row["odds"])
+kelly = kelly_fraction(p_win, odds)
+suggested = get_bankroll() * min(get_cap_pct(), max(0.0, kelly))
+
+c1,c2,c3,c4 = st.columns(4)
+with c1:
+    stake = st.number_input("Stake ($)", value=float(round(suggested,2)), min_value=0.0, step=1.0)
+with c2:
+    result = st.selectbox("Result", ["open","win","loss","push","void"], index=0)
+with c3:
+    book = st.text_input("Book", value=str(row["book"]) if "book" in row.index and pd.notna(row["book"]) else "")
+with c4:
+    ref = st.text_input("Ref / Ticket ID", value=(str(row["ref"]) if "ref" in row.index and pd.notna(row["ref"]) else uuid.uuid4().hex[:10]))
+
+c5,c6,c7 = st.columns(3)
+with c5:
+    side = st.text_input("Side", value=str(row["side"]) if "side" in row.index and pd.notna(row["side"]) else "")
+with c6:
+    selection = st.text_input("Selection", value=str(row["selection"]) if "selection" in row.index and pd.notna(row["selection"]) else "")
+with c7:
+    line = st.text_input("Line", value=str(row["line"]) if "line" in row.index and pd.notna(row["line"]) else "")
+
+st.caption(f"Kelly: {kelly*100:.1f}% | Suggest: ${suggested:,.2f} | Bankroll cap: {get_cap_pct()*100:.1f}%")
+
+if st.button("âž• Add to Bet Log (with model_version)"):
+    rec = {
+        "ts": None,
+        "model_version": MODEL_VERSION,
+        "game_id": str(row["game_id"]) if "game_id" in row.index and pd.notna(row["game_id"]) else "",
+        "market": str(row["market"]) if "market" in row.index and pd.notna(row["market"]) else "",
+        "ref": ref,
+        "side": side,
+        "selection": selection,
+        "league": str(row["league"]) if "league" in row.index and pd.notna(row["league"]) else "",
+        "sport": str(row["sport"]) if "sport" in row.index and pd.notna(row["sport"]) else "",
+        "book": book,
+        "line": line,
+        "odds": odds,
+        "p_win": p_win,
+        "stake": stake,
+        "result": result,
+        "payout": None,
+        "open_odds": odds,
+        "close_odds": None,
+        "season": (int(row["season"]) if "season" in row.index and str(row["season"]).isdigit() else None),
+        "week": (int(row["week"]) if "week" in row.index and str(row["week"]).isdigit() else None),
+    }
+    newlog = append_row(rec)
+    st.success(f"Added to log with model_version={MODEL_VERSION}. Log rows: {len(newlog):,}")
+
+
+
+
+

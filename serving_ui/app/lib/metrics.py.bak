@@ -1,0 +1,48 @@
+﻿from __future__ import annotations
+import pandas as pd
+import numpy as np
+
+def effective_ts(df: pd.DataFrame) -> pd.Series | None:
+    """Choose sort_ts when present, otherwise ts; coalesce if both exist."""
+    s1 = pd.to_datetime(df["sort_ts"], errors="coerce") if "sort_ts" in df.columns else None
+    s2 = pd.to_datetime(df["ts"], errors="coerce")      if "ts"      in df.columns else None
+    if s1 is not None and s2 is not None:
+        return s1.combine_first(s2)
+    return s1 if s1 is not None else s2
+
+def weekly_roi_closed(df_closed: pd.DataFrame) -> pd.DataFrame:
+    """Weekly ROI (closed bets only). Assumes columns: stake, pnl_realized, sort_ts/ts."""
+    out = df_closed.copy()
+    out["ts_eff"]     = effective_ts(out)
+    out["stake_num"]  = pd.to_numeric(out.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+    out["pnl_num"]    = pd.to_numeric(out.get("pnl_realized"), errors="coerce").fillna(0.0)
+    out = out[out["ts_eff"].notna()]
+    if out.empty:
+        return pd.DataFrame(columns=["staked","pnl","ROI%"])
+    wk = (
+        out.set_index("ts_eff")
+           .resample("W")
+           .agg(staked=("stake_num","sum"), pnl=("pnl_num","sum"))
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        wk["ROI%"] = (wk["pnl"] / wk["staked"].replace(0, np.nan)) * 100
+    return wk
+
+def weekly_roi_by_origin(df_closed: pd.DataFrame) -> pd.DataFrame:
+    """Weekly ROI grouped by `origin`."""
+    out = df_closed.copy()
+    out["ts_eff"]     = effective_ts(out)
+    out["stake_num"]  = pd.to_numeric(out.get("stake"), errors="coerce").fillna(1.0).replace(0, 1.0)
+    out["pnl_num"]    = pd.to_numeric(out.get("pnl_realized"), errors="coerce").fillna(0.0)
+    out = out[out["ts_eff"].notna()]
+    if out.empty or "origin" not in out.columns:
+        return pd.DataFrame(columns=["origin","ts","staked","pnl","ROI%"])
+    wk = (
+        out.groupby("origin")
+           .apply(lambda g: g.set_index("ts_eff").resample("W").agg(staked=("stake_num","sum"), pnl=("pnl_num","sum")))
+           .reset_index()
+           .rename(columns={"ts_eff":"ts"})
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        wk["ROI%"] = (wk["pnl"] / wk["staked"].replace(0, np.nan)) * 100
+    return wk

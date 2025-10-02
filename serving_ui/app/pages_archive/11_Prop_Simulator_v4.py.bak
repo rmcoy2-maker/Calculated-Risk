@@ -1,0 +1,36 @@
+# serving_ui/app/pages/08_Prop_Simulator.py
+import streamlit as st
+from app.lib.odds_utils import fair_decimal_from_prob, fair_american_from_prob, american_to_implied
+
+st.set_page_config(page_title="Prop / Alt-Line Simulator", layout="wide")
+st.title("Prop / Alt-Line Simulator (What-If)")
+
+st.caption("Adjust a **model win probability** for an alternate line and get **fair odds** + quick EV check.")
+
+col = st.columns(4)
+with col[0]:
+    p = st.slider("Model Win Probability", 0.01, 0.99, 0.57, 0.01)
+with col[1]:
+    offer = st.number_input("Book Odds (American)", value=-110, step=5)
+with col[2]:
+    bankroll = st.number_input("Bankroll ($)", value=1000.0, min_value=0.0, step=50.0)
+with col[3]:
+    threshnew = st.number_input("EV threshnew (pp)", value=0.0, step=0.1)
+
+fair_dec = fair_decimal_from_prob(p)
+fair_amer = fair_american_from_prob(p)
+implied_offer = american_to_implied(int(offer))
+ev_pp = p - implied_offer
+
+st.metric("Fair Odds (American)", fair_amer)
+st.metric("EV (percentage points)", f"{ev_pp*100:.2f}")
+
+if ev_pp > threshnew/100.0:
+    st.success("This is +EV versus the current offer.")
+else:
+    st.warning("Not +EV at the chosen threshnew.")
+
+
+
+
+

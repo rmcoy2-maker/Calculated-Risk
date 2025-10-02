@@ -1,0 +1,222 @@
+﻿# --- fix_backtest_and_betlog.ps1 ---
+
+$repo = (Get-Location).Path
+$backtest = Join-Path $repo "serving_ui\app\pages\03_Backtest.py"
+$betlog   = Join-Path $repo "serving_ui\app\pages\06_Bet_Log.py"
+
+function Backup-File($p) {
+  if (Test-Path $p) {
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    Copy-Item $p "$p.$stamp.bak" -Force
+  }
+}
+
+# 1) Back up originals
+Backup-File $backtest
+Backup-File $betlog
+
+# 2) Replace 03_Backtest.py with a clean, minimal working page
+@'
+# -*- coding: utf-8 -*-
+# Backtest page (clean minimal version)
+
+from pathlib import Path
+import pandas as _pd
+import streamlit as _st
+
+_EDGES = Path("exports/edges.csv")
+
+# =========================
+# Helpers
+# -------------------------
+def __read_edges() -> _pd.DataFrame:
+    try:
+        if not _EDGES.exists():
+            return _pd.DataFrame()
+        df = _pd.read_csv(_EDGES, encoding="utf-8-sig")
+    except Exception:
+        try:
+            df = _pd.read_csv(_EDGES)
+        except Exception:
+            return _pd.DataFrame()
+
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    if "ts" in df.columns:
+        df["sort_ts"] = _pd.to_datetime(df["ts"], errors="coerce")
+    else:
+        df["sort_ts"] = _pd.NaT
+
+    keep = [
+        "sort_ts","ts","sport","league","game_id","market","market_group",
+        "ref","side","line","odds","p_win","edge","stake","profit"
+    ]
+    for k in keep:
+        if k not in df.columns:
+            df[k] = None
+    return df[keep]
+
+def __render_summary(df: _pd.DataFrame):
+    cols = _st.columns(5)
+    n = len(df)
+    wins = _pd.to_numeric(df.get("profit"), errors="coerce").fillna(0)
+    wins_ct = (wins > 0).sum()
+    losses_ct = (wins < 0).sum()
+    pushes_ct = (wins == 0).sum()
+    stake_sum = _pd.to_numeric(df.get("stake"), errors="coerce").fillna(0).sum()
+    prof_sum = _pd.to_numeric(df.get("profit"), errors="coerce").fillna(0).sum()
+    roi = (prof_sum / stake_sum) if stake_sum > 0 else None
+
+    cols[0].metric("Bets", n)
+    cols[1].metric("Wins", int(wins_ct))
+    cols[2].metric("Losses", int(losses_ct))
+    cols[3].metric("Pushes", int(pushes_ct))
+    cols[4].metric("ROI", "-" if roi is None else f"{roi*100:.1f}%")
+
+def __equity(df: _pd.DataFrame, start: float = 100.0) -> _pd.DataFrame:
+    p = _pd.to_numeric(df.get("profit", 0), errors="coerce").fillna(0)
+    eq = start + p.cumsum()
+    out = _pd.DataFrame({"ts": df["sort_ts"], "equity": eq})
+    out.set_index("ts", inplace=True)
+    return out
+
+# -------------------------
+# UI
+# -------------------------
+with _st.expander("Controls", expanded=False):
+    start_bankroll = _st.number_input(
+        "Starting bankroll (units)", min_value=0.0, value=100.0, step=1.0, key="bk_start"
+    )
+    run = _st.button("Run Backtest", type="primary")
+    if run:
+        _st.success("Backtest run hook executed (implement your pipeline here).")
+
+edges_df = __read_edges()
+
+_st.subheader("Summary")
+__render_summary(edges_df)
+
+_st.subheader("Equity curve")
+if edges_df.empty:
+    _st.info("No edges found in exports/edges.csv")
+else:
+    _st.line_chart(__equity(edges_df, start=_st.session_state.get("bk_start", 100.0)), y="equity")
+
+_st.subheader("Edges preview")
+_st.dataframe(edges_df, use_container_width=True, hide_index=True)
+'@ | Set-Content -LiteralPath $backtest -Encoding UTF8
+
+# 3) Replace 06_Bet_Log.py with a clean, minimal working page
+@'
+# -*- coding: utf-8 -*-
+# Bet Log page (clean minimal version)
+
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+_BETS = Path("exports/bets_log.csv")
+_PARLAYS = Path("exports/parlays.csv")
+
+def _read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    except Exception:
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return pd.DataFrame()
+
+def _build_betlog_dataframe() -> pd.DataFrame:
+    bets = _read_csv_safe(_BETS)
+    parlays = _read_csv_safe(_PARLAYS)
+
+    def _norm(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        df = df.copy()
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        if "ts" in df.columns:
+            df["sort_ts"] = pd.to_datetime(df["ts"], errors="coerce")
+        else:
+            df["sort_ts"] = pd.NaT
+        # ensure these exist
+        for c in ("stake","profit","result"):
+            if c not in df.columns:
+                df[c] = 0 if c != "result" else ""
+        return df
+
+    bets = _norm(bets)
+    parlays = _norm(parlays)
+
+    if not parlays.empty:
+        parlays["origin"] = "parlay"
+    if not bets.empty:
+        bets["origin"] = "bet"
+
+    cols = sorted(set(bets.columns) | set(parlays.columns))
+    out = pd.concat([bets.reindex(columns=cols), parlays.reindex(columns=cols)], ignore_index=True)
+    return out.sort_values("sort_ts").reset_index(drop=True)
+
+def _summarize(bets: pd.DataFrame) -> dict:
+    if bets.empty:
+        return dict(bets=0, wins=0, losses=0, pushes=0, roi=None)
+
+    res = bets["result"].astype(str).str.lower().fillna("")
+    wins = (res == "win").sum()
+    losses = (res == "loss").sum()
+    pushes = (res == "push").sum()
+    bets_ct = len(bets)
+
+    total_stake = pd.to_numeric(bets["stake"], errors="coerce").fillna(0).sum()
+    total_profit = pd.to_numeric(bets["profit"], errors="coerce").fillna(0).sum()
+    roi = (total_profit / total_stake) if total_stake > 0 else None
+    return dict(bets=bets_ct, wins=wins, losses=losses, pushes=pushes, roi=roi)
+
+def _equity_series(bets: pd.DataFrame, starting_bankroll: float = 100.0) -> pd.DataFrame:
+    p = pd.to_numeric(bets.get("profit", 0), errors="coerce").fillna(0)
+    equity = starting_bankroll + p.cumsum()
+    out = pd.DataFrame({"ts": bets["sort_ts"], "equity": equity})
+    out.set_index("ts", inplace=True)
+    return out
+
+# -------------------------
+# Build & render
+# -------------------------
+bets_df = _build_betlog_dataframe()
+
+st.subheader("Summary")
+cols = st.columns(5)
+S = _summarize(bets_df)
+cols[0].metric("Bets", S["bets"])
+cols[1].metric("Wins", S["wins"])
+cols[2].metric("Losses", S["losses"])
+cols[3].metric("Pushes", S["pushes"])
+cols[4].metric("ROI", "-" if S["roi"] is None else f"{S['roi']*100:.1f}%")
+
+st.subheader("Bankroll equity and drawdown")
+start_bankroll = st.number_input("Starting bankroll (units)", min_value=0.0, value=100.0, step=1.0)
+if bets_df.empty:
+    st.info("No bets found in exports/bets_log.csv or exports/parlays.csv")
+else:
+    equity_df = _equity_series(bets_df, starting_bankroll=start_bankroll)
+    st.line_chart(equity_df, y="equity")
+
+st.caption('Equity uses the "profit" column; ROI uses total profit / total stake when available.')
+
+st.subheader("Filtered rows")
+st.dataframe(bets_df, use_container_width=True, hide_index=True)
+'@ | Set-Content -LiteralPath $betlog -Encoding UTF8
+
+# 4) Sanity-compile
+$py = ".\.venv\Scripts\python.exe"
+foreach ($p in @($backtest,$betlog)) {
+  & $py -c "import ast, pathlib; p=r'$p'; ast.parse(pathlib.Path(p).read_text(encoding='utf-8')); print('OK:', p)" 2>$null
+}
+
+# 5) Relaunch Streamlit
+$st  = ".\.venv\Scripts\streamlit.exe"
+$hub = Join-Path $repo "serving_ui\app\00_Hub.py"
+Get-Process python, streamlit -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+& $st run $hub --server.address 0.0.0.0 --server.port 8592

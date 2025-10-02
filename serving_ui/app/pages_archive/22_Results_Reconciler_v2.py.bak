@@ -1,0 +1,97 @@
+# serving_ui/app/pages/17_Results_Reconciler.py
+import pandas as pd
+import streamlit as st
+from serving_ui.app._layout import header
+from app.lib.betlog import read_log, log_path
+
+header("Results Reconciler (CSV Ã¢â€ â€™ Settle)")
+
+st.caption("Upload a results CSV (by `ref` or tuple: `game_id,market,side,selection`) to auto-fill `result` and (optionally) `payout`.")
+
+up = st.file_uploader("Upload results CSV", type=["csv"])
+if not up:
+    st.stop()
+
+try:
+    res = pd.read_csv(up)
+except Exception:
+    res = pd.read_csv(up, encoding_errors="ignore")
+
+orig_cols = res.columns.tolist()
+res.columns = [c.strip().lower() for c in res.columns]
+
+if "result" not in res.columns:
+    st.error("CSV must contain a `result` column.")
+    st.stop()
+
+log = read_log()
+if log.empty:
+    st.warning("Bet log is empty.")
+    st.stop()
+log.columns = [c.strip().lower() for c in log.columns]
+for c in ["ref","game_id","market","side","selection","odds","stake","result","payout"]:
+    if c not in log.columns:
+        log[c] = None
+
+# index maps
+by_ref = {str(v).strip().lower(): i for i, v in log["ref"].items() if pd.notna(v)}
+by_tuple = {}
+if {"game_id","market","side","selection"} <= set(log.columns):
+    for i, r in log.iterrows():
+        key = (str(r.get("game_id","")).strip().lower(),
+               str(r.get("market","")).strip().lower(),
+               str(r.get("side","")).strip().lower(),
+               str(r.get("selection","")).strip().lower())
+        by_tuple[key] = i
+
+def auto_payout(result: str, stake, odds):
+    import math
+    try:
+        stake = float(stake); odds = int(odds)
+    except Exception:
+        return None
+    dec = 1 + (odds/100.0 if odds>0 else 100.0/abs(odds))
+    r = (result or "").strip().lower()
+    if r == "win": return stake*(dec - 1.0)
+    if r == "loss": return -stake
+    return 0.0  # push/void/open
+
+updated = 0
+for _, r in res.iterrows():
+    idx = None
+    ref = str(r.get("ref","")).strip().lower()
+    if ref and ref in by_ref:
+        idx = by_ref[ref]
+    elif {"game_id","market","side","selection"} <= set(res.columns):
+        key = (str(r.get("game_id","")).strip().lower(),
+               str(r.get("market","")).strip().lower(),
+               str(r.get("side","")).strip().lower(),
+               str(r.get("selection","")).strip().lower())
+        idx = by_tuple.get(key)
+
+    if idx is None:
+        continue
+
+    # apply result
+    result_val = str(r.get("result","")).strip().lower()
+    if result_val:
+        log.at[idx, "result"] = result_val
+
+    # optional payout from file or compute
+    pay = r.get("payout", None)
+    if pd.isna(pay) or pay == "":
+        pay = auto_payout(result_val, log.at[idx,"stake"], log.at[idx,"odds"])
+    log.at[idx, "payout"] = pd.to_numeric(pay, errors="coerce")
+
+    updated += 1
+
+out = log_path()
+log.to_csv(out, index=False)
+st.success(f"Updated {updated:,} rows Ã¢â€ â€™ `{out}`")
+with st.expander("Tail of updated log"):
+    st.dataframe(log.tail(30), use_container_width=True, hide_index=True)
+
+
+
+
+

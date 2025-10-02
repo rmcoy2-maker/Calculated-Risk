@@ -1,0 +1,265 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+import os
+import math
+import heapq
+from pathlib import Path
+from _branding import setup_branding
+setup_branding(__file__, subtitle='Edge Finder Betting Analytics Parlay Builder')
+import numpy as np
+import pandas as pd
+from tools.lines_shop_io import read_latest_shop
+st.set_page_config(page_title='Ghost Parlay Calculator', page_icon='👻', layout='wide')
+
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+st.title('Ghost Parlay Calculator')
+if st.button('Refresh data', type='primary'):
+    st.cache_data.clear()
+    st.rerun()
+
+@st.cache_data(show_spinner=False)
+def load_lines() -> pd.DataFrame:
+    df = read_latest_shop()
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    for c in ('game_id', 'market', 'side', 'book', 'odds', 'p_win'):
+        if c not in df.columns:
+            df[c] = np.nan if c in ('odds', 'p_win') else ''
+    if df['p_win'].isna().all():
+
+        def _amer_to_p(o):
+            try:
+                o = float(o)
+            except Exception:
+                return np.nan
+            return 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0) if o < 0 else np.nan
+        df['p_win'] = df['odds'].map(_amer_to_p)
+    df['odds'] = pd.to_numeric(df['odds'], errors='coerce')
+    df['p_win'] = pd.to_numeric(df['p_win'], errors='coerce').clip(0, 1)
+    return df
+edges = load_lines()
+st.caption(f'Loaded Line Shop · rows={len(edges):,} · cols={len(edges.columns)}')
+if edges.empty:
+    st.warning('No lines found. Make sure exports/lines_shop_latest.parquet exists and has columns like: game_id, market, side, book, odds (and p_win if you have model probs).')
+    st.stop()
+st.sidebar.header('Build Controls')
+max_legs = st.sidebar.slider('Max legs (min 3)', min_value=3, max_value=10, value=4, step=1)
+min_p = st.sidebar.slider('Min leg win prob', min_value=0.3, max_value=0.8, value=0.5, step=0.01)
+min_abs_odds = st.sidebar.number_input('Min |odds|', min_value=50, max_value=10000, value=100, step=10)
+limit_combos = st.sidebar.number_input('Cap combos (0=no cap)', min_value=0, max_value=2000000, value=5000, step=500)
+st.sidebar.divider()
+st.sidebar.header('Ranking & Filters')
+min_roi_pct = st.sidebar.number_input('Min ROI (%)', value=0.0, step=0.5)
+min_kelly = st.sidebar.number_input('Min Kelly', value=0.0, step=0.01)
+show_top_n = st.sidebar.number_input('Show top N', min_value=5, max_value=250, value=25, step=5)
+
+def american_to_decimal(o):
+    try:
+        o = float(o)
+    except Exception:
+        return math.nan
+    if o > 0:
+        return 1.0 + o / 100.0
+    if o < 0:
+        return 1.0 + 100.0 / abs(o)
+    return math.nan
+
+def parlay_ev_per_dollar(p_list, dec_list):
+    """EV per $1 for a parlay: EV = P(all win)*(prod_dec-1) - (1 - P(all win))."""
+    if not p_list or not dec_list:
+        return math.nan
+    p_all, dec_prod = (1.0, 1.0)
+    for p, d in zip(p_list, dec_list):
+        if not 0.0 <= p <= 1.0 or not d > 1.0:
+            return math.nan
+        p_all *= p
+        dec_prod *= d
+    return p_all * (dec_prod - 1.0) - (1.0 - p_all)
+pool = edges.dropna(subset=['game_id', 'side', 'book']).copy()
+pool = pool[(pool['p_win'].fillna(0) >= float(min_p)) & (pool['odds'].abs() >= float(min_abs_odds))]
+pool['dec'] = pool['odds'].map(american_to_decimal)
+pool['_rk'] = pool.groupby(['game_id', 'market', 'side', 'book'])['dec'].rank(ascending=False, method='first')
+pool = pool[pool['_rk'] == 1.0].drop(columns=['_rk']).reset_index(drop=True)
+from math import comb as _comb
+
+def _safe_comb(n: int, k: int) -> str:
+    try:
+        if k <= 0 or n < k:
+            return '0'
+        v = _comb(n, k)
+        return f'{v:,}' if v < 1000000000 else f'{v / 1000000000:.1f}B+'
+    except Exception:
+        return '—'
+pool_n = len(pool)
+est = _safe_comb(pool_n, int(max_legs))
+cap_txt = 'no cap' if int(limit_combos) == 0 else f'{int(limit_combos):,}'
+st.caption(f'**Pool:** {pool_n:,} legs • **Max legs:** {int(max_legs)} • **Cap combos:** {cap_txt} • **~Combos @ max:** {est}')
+if pool_n == 0:
+    st.warning('No legs match current sliders. Lower **Min leg win prob** or **Min |odds|**.')
+    st.stop()
+
+def topN_parlays(pool_df, max_legs: int, cap: int, topN: int, per_game_limit: int=1):
+    """
+    Return top-N parlays by EV/$1 without brute-forcing all combos.
+    pool_df must contain: ['game_id','market','side','book','odds','p_win']
+    """
+    if max_legs < 2:
+        max_legs = 2
+    if cap is None or int(cap) <= 0:
+        cap = 100000
+    df = pool_df.copy()
+    df['dec'] = df['odds'].map(american_to_decimal)
+    df = df[pd.to_numeric(df['p_win'], errors='coerce').between(0, 1)]
+    df = df[pd.to_numeric(df['dec'], errors='coerce') > 1.0]
+    if df.empty:
+        return []
+    rows = df[['game_id', 'market', 'side', 'book', 'odds', 'p_win', 'dec']].to_dict('records')
+    n = len(rows)
+    if n == 0:
+        return []
+    rows.sort(key=lambda r: r['p_win'] * (r['dec'] - 1.0), reverse=True)
+
+    def ok_with_game(add_gid, used):
+        return used.get(add_gid, 0) < per_game_limit
+    evals = 0
+    best_heap: list[tuple[float, int, dict]] = []
+    idx_counter = 0
+    beam = min(max(1000, cap // 10), 10000)
+    partials: list[tuple[float, int, list, int, dict, float, float]] = []
+    for i, r in enumerate(rows[:beam]):
+        p = r['p_win']
+        d = r['dec']
+        ev = parlay_ev_per_dollar([p], [d])
+        partials.append((ev, i, [i], 1, {r['game_id']: 1}, p, d))
+        idx_counter += 1
+        heapq.heappush(best_heap, (ev, idx_counter, {'legs': [i], 'n_legs': 1, 'p_all': p, 'dec': d, 'ev_per_$1': ev}))
+        if len(best_heap) > topN:
+            heapq.heappop(best_heap)
+    for L in range(2, max_legs + 1):
+        next_partials = []
+        partials.sort(key=lambda t: t[0], reverse=True)
+        partials = partials[:beam]
+        for ev_curr, last_idx, idxs, nlegs, gid_count, p_all, dec_prod in partials:
+            for j in range(last_idx + 1, n):
+                rj = rows[j]
+                gid = rj['game_id']
+                if not ok_with_game(gid, gid_count):
+                    continue
+                new_idxs = idxs + [j]
+                new_gid_count = dict(gid_count)
+                new_gid_count[gid] = new_gid_count.get(gid, 0) + 1
+                new_p_all = p_all * rj['p_win']
+                new_dec = dec_prod * rj['dec']
+                ev = parlay_ev_per_dollar([rows[k]['p_win'] for k in new_idxs], [rows[k]['dec'] for k in new_idxs])
+                evals += 1
+                next_partials.append((ev, j, new_idxs, nlegs + 1, new_gid_count, new_p_all, new_dec))
+                idx_counter += 1
+                heapq.heappush(best_heap, (ev, idx_counter, {'legs': new_idxs, 'n_legs': nlegs + 1, 'p_all': new_p_all, 'dec': new_dec, 'ev_per_$1': ev}))
+                if len(best_heap) > topN:
+                    heapq.heappop(best_heap)
+                if evals >= cap:
+                    out = [heapq.heappop(best_heap)[2] for _ in range(len(best_heap))]
+                    out.reverse()
+                    for it in out:
+                        it['legs'] = [rows[k] for k in it['legs']]
+                    return out
+        partials = next_partials
+        if not partials:
+            break
+    out = [heapq.heappop(best_heap)[2] for _ in range(len(best_heap))]
+    out.reverse()
+    for it in out:
+        it['legs'] = [rows[k] for k in it['legs']]
+    return out
+go = st.button('Generate Ghost Parlays', type='secondary', disabled=False)
+if not go:
+    st.info('Build some parlays first with **Generate Ghost Parlays**.')
+    st.stop()
+with st.spinner('Searching best parlays…'):
+    res = topN_parlays(pool_df=pool[['game_id', 'market', 'side', 'book', 'odds', 'p_win']].copy(), max_legs=int(max_legs), cap=int(limit_combos), topN=int(show_top_n), per_game_limit=1)
+if not res:
+    st.warning('No parlays found at current filters.')
+    st.stop()
+rows_out = []
+for r in res:
+    legs = r['legs']
+    title = ' + '.join([f"{l['side']} ({l['book']} {int(l['odds']):+d})" for l in legs])
+    rows_out.append({'n_legs': r['n_legs'], 'EV/$1': round(float(r['ev_per_$1']), 4) if pd.notna(r['ev_per_$1']) else np.nan, 'Parlay Prob': round(float(r['p_all']), 6) if pd.notna(r['p_all']) else np.nan, 'Parlay Dec': round(float(r['dec']), 4) if pd.notna(r['dec']) else np.nan, 'Title': title, 'Legs': legs})
+out_df = pd.DataFrame(rows_out).sort_values(['EV/$1', 'Parlay Prob'], ascending=[False, False]).head(int(show_top_n))
+st.subheader(f'Top {len(out_df)} Parlays')
+st.dataframe(out_df[['n_legs', 'EV/$1', 'Parlay Prob', 'Parlay Dec', 'Title']], hide_index=True, height=560, width='stretch')
+csv = out_df.to_csv(index=False).encode('utf-8')
+st.download_button('⬇️ Download Top Parlays (CSV)', data=csv, file_name='ghost_parlays_top.csv', mime='text/csv')
+with st.expander('Show raw legs for top parlays'):
+    st.write(out_df[['n_legs', 'EV/$1', 'Parlay Prob', 'Parlay Dec', 'Legs']])
+
+
+
+
+

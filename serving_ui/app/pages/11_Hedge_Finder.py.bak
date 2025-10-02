@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+# --- import bootstrap so 'app' package is importable when run from anywhere ---
+import sys, os
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+_SERVING_UI = _HERE.parents[2]  # .../serving_ui
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+from app.lib.access import live_enabled
+
+if live_enabled():
+    # do live fetch / recompute / write / API calls
+    do_expensive_refresh()
+else:
+    # skip; rely on cached CSVs in /exports that your app already loads
+    pass
+
+# -----------------------------------------------------------------------------
+import streamlit as st
+import streamlit as st
+st.set_page_config(page_title='11 Hedge Finder', page_icon='📈', layout='wide')
+
+import streamlit as st
+
+import streamlit as st
+
+
+import streamlit as st
+
+
+import os, time, math
+from pathlib import Path
+from typing import List, Optional, Dict
+import numpy as np
+import pandas as pd
+import streamlit as st
+from app.utils.parlay_ui import selectable_odds_table
+from app.utils.parlay_cart import read_cart, clear_cart
+# --- diagnostics import (robust) ---
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        # add repo/serving_ui to sys.path so 'app' is importable
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            # fallback if pages run with CWD=app
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+            def mount_in_sidebar(page_name: str):
+                return None
+# --- /diagnostics import (robust) ---
+
+TZ = "America/New_York"
+
+def _exports_dir() -> Path:
+    env = os.environ.get("EDGE_EXPORTS_DIR", "").strip()
+    if env:
+        p = Path(env); p.mkdir(parents=True, exist_ok=True); return p
+    here = Path(__file__).resolve()
+    for up in [here.parent] + list(here.parents):
+        if up.name.lower() == "edge-finder":
+            p = up / "exports"; p.mkdir(parents=True, exist_ok=True); return p
+    p = Path.cwd() / "exports"; p.mkdir(parents=True, exist_ok=True); return p
+
+def _age_str(p: Path) -> str:
+    try:
+        secs = int(time.time() - p.stat().st_mtime)
+        return f"{secs}s" if secs < 60 else f"{secs//60}m"
+    except Exception:
+        return "n/a"
+
+_ALIAS = {
+    "REDSKINS": "COMMANDERS", "WASHINGTON": "COMMANDERS", "FOOTBALL": "COMMANDERS",
+    "OAKLAND": "RAIDERS", "LV": "RAIDERS", "LAS": "RAIDERS", "VEGAS": "RAIDERS",
+    "SD": "CHARGERS", "STL": "RAMS",
+}
+
+def _nickify(series: pd.Series) -> pd.Series:
+    s = series.astype("string").fillna("").str.upper()
+    s = s.str.replace(r"[^A-Z0-9 ]+", "", regex=True).str.strip().replace(_ALIAS)
+    return s.str.replace(r"\s+", "_", regex=True)
+
+def _best_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    low = {c.lower(): c for c in df.columns}
+    for c in candidates:
+        if c.lower() in low: return low[c.lower()]
+    return None
+
+def _ensure_nicks(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty: return df
+    home_c = _best_col(df, ["_home_nick","home_nick","home","home_team","Home","HOME","team_home"])
+    away_c = _best_col(df, ["_away_nick","away_nick","away","away_team","Away","AWAY","team_away"])
+    if home_c is None: df["_home_nick"] = pd.Series([""]*len(df), dtype="string")
+    else: df["_home_nick"] = _nickify(df[home_c].astype("string"))
+    if away_c is None: df["_away_nick"] = pd.Series([""]*len(df), dtype="string")
+    else: df["_away_nick"] = _nickify(df[away_c].astype("string"))
+    return df
+
+def _norm_market(m) -> str:
+    m = (str(m) or "").strip().lower()
+    if m in {"h2h", "ml", "moneyline", "money line"}: return "H2H"
+    if m.startswith("spread") or m in {"spread", "spreads"}: return "SPREADS"
+    if m.startswith("total")  or m in {"total", "totals"}:  return "TOTALS"
+    return m.upper()
+
+def _odds_to_decimal(o: pd.Series) -> pd.Series:
+    o = pd.to_numeric(o, errors="coerce")
+    return np.where(o > 0, 1 + (o / 100.0),
+           np.where(o < 0, 1 + (100.0 / np.abs(o)), np.nan))
+
+def _ensure_date_iso(df: pd.DataFrame, candidates: List[str]) -> pd.DataFrame:
+    if len(df) == 0: return df
+    for c in candidates:
+        if c in df.columns:
+            s = pd.to_datetime(df[c], errors="coerce", utc=True)
+            df["_date_iso"] = s.dt.tz_convert(TZ).dt.strftime("%Y-%m-%d")
+            break
+    if "_date_iso" not in df.columns:
+        df["_date_iso"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    return df
+
+def latest_batch(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return df
+    for col in ["_snapshot_ts_utc","snapshot_ts_utc","snapshot_ts","_ts","ts"]:
+        if col in df.columns:
+            ts = pd.to_datetime(df[col], errors="coerce", utc=True)
+            last = ts.max()
+            return df[ts == last].copy()
+    return df
+
+def within_next_week(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return df
+    if "_date_iso" not in df.columns: return df
+    d = pd.to_datetime(df["_date_iso"], errors="coerce", utc=True).dt.tz_convert(TZ)
+    today = pd.Timestamp.now(tz=TZ).normalize()
+    end   = today + pd.Timedelta(days=7)
+    return df[(d >= today) & (d <= end)].copy()
+
+def refresh_button(key: Optional[str] = None):
+    if st.button("🔄 Refresh data", key=key or f"refresh_{__name__}"):
+        try: st.cache_data.clear()
+        except Exception: pass
+        st.rerun()
+
+def _latest_csv(paths: list[Path]) -> Optional[Path]:
+    paths = [p for p in paths if p and p.exists()]
+    if not paths: return None
+    return max(paths, key=lambda p: p.stat().st_mtime)
+
+@st.cache_data(ttl=60)
+def load_live() -> tuple[pd.DataFrame, Path]:
+    exp = _exports_dir()
+    cand = [exp / "lines_live.csv", exp / "lines_live_latest.csv"]
+    p = _latest_csv(cand) or cand[0]
+    df = pd.read_csv(p, low_memory=False, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+    return df, p
+
+@st.cache_data(ttl=60)
+def load_open_close() -> tuple[pd.DataFrame, Path]:
+    exp = _exports_dir()
+    cand = [exp/"lines_open_close.csv", exp/"lines_open_close_latest.csv"]
+    p = _latest_csv(cand) or cand[0]
+    df = pd.read_csv(p, low_memory=False, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+    return df, p
+
+@st.cache_data(ttl=60)
+def load_edges() -> tuple[pd.DataFrame, Path]:
+    exp = _exports_dir()
+    names = ["edges_standardized.csv","edges_graded_full_normalized_std.csv","edges_graded_full.csv","edges_normalized.csv","edges_master.csv"]
+    paths = [exp/n for n in names]
+    p = _latest_csv(paths) or paths[0]
+    df = pd.read_csv(p, low_memory=False, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+    return df, p
+
+diag = mount_in_sidebar("11_Hedge_Finder")
+st.title("Hedge Finder")
+refresh_button(key="refresh_11_hedge")
+
+edges, edges_p = load_edges()
+st.caption(f"Edges: `{edges_p}` · rows={len(edges):,}")
+if edges.empty: st.stop()
+
+for need in ["game_id","market","side","book"]:
+    if need not in edges.columns: edges[need] = pd.NA
+edges["odds"] = pd.to_numeric(edges.get("odds", edges.get("price", pd.Series(index=edges.index))), errors="coerce")
+
+top = st.columns([1, 1.2, 2, 1])
+with top[0]: newest_first = st.toggle("Newest first", value=True)
+with top[1]: mode = st.selectbox("Side match", ["Strict (OU/Home-Away)", "Loose (any different)"], index=1)
+with top[2]: odds_min, odds_max = st.slider("Odds window (American, abs)", 100, 300, (100, 200))
+with top[3]: run = st.button("Find hedges", type="primary", use_container_width=True)
+
+if newest_first and "sort_ts" in edges.columns and pd.to_datetime(edges["sort_ts"], errors="coerce").notna().any():
+    edges = edges.sort_values("sort_ts", ascending=False, na_position="last")
+
+games = edges["game_id"].dropna().astype(str).unique().tolist()
+game = st.selectbox("Game", ["All"] + games)
+subset = edges if game == "All" else edges[edges["game_id"].astype(str) == game]
+subset = subset[subset["odds"].abs().between(odds_min, odds_max, inclusive="both")]
+
+def is_opposite(a: str, b: str, mode: str) -> bool:
+    if not a or not b: return False
+    A, B = str(a).strip().lower(), str(b).strip().lower()
+    if mode == "Strict (OU/Home-Away)":
+        return (A,B) in {("over","under"),("home","away"),("away","home")} or (B,A) in {("over","under"),("home","away"),("away","home")}
+    return A != B
+
+if not run: st.info("Adjust filters and click **Find hedges**."); st.stop()
+
+from itertools import combinations
+rows = []
+for (gid, mkt), g in subset.groupby(["game_id", "market"], dropna=False):
+    g = g.reset_index(drop=True)
+    for i, j in combinations(range(len(g)), 2):
+        a, b = g.loc[i], g.loc[j]
+        if is_opposite(a.get("side", ""), b.get("side", ""), mode):
+            rows.append({"game_id": str(gid), "market": str(mkt),
+                         "a_side": str(a.get("side", "")), "a_odds": a.get("odds"), "a_book": str(a.get("book", "")),
+                         "b_side": str(b.get("side", "")), "b_odds": b.get("odds"), "b_book": str(b.get("book", ""))})
+if not rows: st.info("No hedges found at current filters.")
+else:
+    out = pd.DataFrame(rows)
+    st.dataframe(out, use_container_width=True)
+    st.download_button("Download hedges.csv", data=out.to_csv(index=False).encode("utf-8"), file_name="hedges.csv", mime="text/csv")
+
+# --- _EF_DIAG_SNAPSHOT_ (auto-added) ---
+try:
+    import pandas as _ef_pd
+    from pathlib import Path as _ef_Path
+    _ef = locals().get("diag", None)
+    if _ef:
+        for _nm in ("edges_p","live_p","oc_path","edges_path","live_path","scores_path","scores_p","epath","spath","_lines_p","_edges_p"):
+            _p = locals().get(_nm, None)
+            if _p:
+                try: _ef.check_file(_ef_Path(str(_p)), required=False, label=_nm)
+                except Exception: pass
+        for _dfn in ("edges","live","oc","scores","joined","view"):
+            _df = locals().get(_dfn, None)
+            try:
+                if isinstance(_df, _ef_pd.DataFrame):
+                    _ef.log_df(_df, _dfn)
+            except Exception:
+                pass
+except Exception:
+    pass
+# --- /_EF_DIAG_SNAPSHOT_ ---
+
+
+
+
+# --- AUTO-APPENDED: add-to-cart selector ---
+try:
+    if "edges" in globals() and isinstance(edges, pd.DataFrame):
+        selectable_odds_table(edges, page_key="hedge_finder", page_name="11_Hedge_Finder")
+except Exception:
+    pass
+
+
+
+

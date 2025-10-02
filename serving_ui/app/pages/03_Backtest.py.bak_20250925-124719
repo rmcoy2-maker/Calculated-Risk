@@ -1,0 +1,270 @@
+import os, math, json
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+# ------------- Helpers
+def _read_first_existing(paths):
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                return pd.read_csv(p, low_memory=False)
+            except Exception:
+                pass
+    return pd.DataFrame()
+
+def ensure_lower_str(s):
+    if s is None:
+        return pd.Series([], dtype="object")
+    if isinstance(s, pd.Series):
+        return s.astype(str).str.strip().str.lower()
+    return pd.Series([str(s).strip().lower()])
+
+def coalesce_cols(df: pd.DataFrame, candidates, dtype="str"):
+    for c in candidates:
+        if c in df.columns:
+            return df[c]
+    return pd.Series([None]*len(df))
+
+from datetime import datetime
+
+def parse_ts(df: pd.DataFrame) -> pd.Series:
+    """
+    Best-effort timestamp for sorting backtests.
+    Uses common datetime columns, then ISO (season/week) → Monday of that week.
+    """
+    # Prefer explicit sort_ts if present
+    if "sort_ts" in df.columns:
+        ts = pd.to_datetime(df["sort_ts"], errors="coerce", utc=True)
+        if ts.notna().any():
+            return ts
+
+    # Try typical date/time columns
+    for cols in [
+        ("event_ts",),
+        ("event_datetime",),
+        ("game_time",),
+        ("game_datetime",),
+        ("event_date","event_time"),
+        ("game_date","game_time"),
+        ("date","time"),
+    ]:
+        if len(cols) == 1 and cols[0] in df.columns:
+            ts = pd.to_datetime(df[cols[0]], errors="coerce", utc=True)
+            if ts.notna().any():
+                return ts
+        elif len(cols) == 2 and all(c in df.columns for c in cols):
+            ts = pd.to_datetime(
+                df[cols[0]].astype(str) + " " + df[cols[1]].astype(str),
+                errors="coerce", utc=True
+            )
+            if ts.notna().any():
+                return ts
+
+    # Season/Week ➜ Monday-of-week using ISO calendar (vectorized, safe)
+    if "season" in df.columns and "week" in df.columns:
+        y = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+        w = pd.to_numeric(df["week"],   errors="coerce").astype("Int64")
+
+        # build list with NaT for invalid pairs
+        def _iso_monday(row) -> pd.Timestamp:
+            yy, ww = row["season"], row["week"]
+            try:
+                if pd.isna(yy) or pd.isna(ww) or int(ww) < 1:
+                    return pd.NaT
+                # Monday (1) of ISO week
+                return pd.Timestamp.fromisocalendar(int(yy), int(ww), 1).tz_localize("UTC")
+            except Exception:
+                return pd.NaT
+
+        ts = pd.DataFrame({"season": y, "week": w}).apply(_iso_monday, axis=1)
+        if ts.notna().any():
+            return ts
+
+    # Fallback: monotonic to keep sort stable
+    return pd.to_datetime(pd.Series(range(len(df))), unit="s", origin="unix", utc=True)
+
+    # As a last resort, try season/week + a sequence
+    if "season" in df.columns and "week" in df.columns:
+        base = (df["season"].fillna(0).astype(int) * 100 + df["week"].fillna(0).astype(int)).astype(int)
+        return pd.to_datetime(base.astype(str), format="%Y%W", errors="coerce")
+
+    # Fallback: NA
+    return pd.to_datetime(pd.Series([pd.NaT]*len(df)), errors="coerce", utc=True)
+
+def ensure_contract(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    # Normalize column names (soft)
+    df = df.copy()
+    df.columns = [str(c) for c in df.columns]
+
+    # market normalized
+    if "market" in df.columns:
+        df["market_norm"] = ensure_lower_str(df["market"])
+    else:
+        # sometimes it's bet_type/market_type
+        df["market_norm"] = ensure_lower_str(coalesce_cols(df, ["bet_type","market_type","wager_type"]))
+
+    # result normalization (if you ever show W/L later)
+    if "result" in df.columns:
+        df["result_norm"] = ensure_lower_str(df["result"]).replace({"w":"win","l":"loss"})
+    else:
+        df["result_norm"] = np.nan
+
+    # settled normalization (bool)
+    settled_src = None
+    for c in ["settled","is_settled","graded","is_graded","finalized"]:
+        if c in df.columns:
+            settled_src = c
+            break
+    if settled_src:
+        v = df[settled_src]
+        if v.dtype == bool:
+            df["settled_bool"] = v
+        else:
+            df["settled_bool"] = ensure_lower_str(v).isin(["1","true","t","yes","y","final","finalized"])
+    else:
+        # infer from result if present
+        df["settled_bool"] = ensure_lower_str(df.get("result_norm")).isin(["win","loss","push","void"])
+
+    # season/week best-effort
+    for name, alts in [
+        ("season", ["season","year"]),
+        ("week",   ["week","wk","game_week","schedule_week"])
+    ]:
+        if name not in df.columns:
+            df[name] = pd.to_numeric(coalesce_cols(df, alts), errors="coerce").astype("Int64")
+
+    # sort_ts (crucial)
+    df["sort_ts"] = parse_ts(df)
+    if df["sort_ts"].isna().all():
+        # if nothing parsed, make a monotonic index so sort is stable
+        df["sort_ts"] = pd.to_datetime(pd.Series(range(len(df))), unit="s", origin="unix", utc=True)
+
+    # Parlay grouping id (optional)
+    df["parlay_group"] = coalesce_cols(df, ["parlay_id","slip_id","ticket_id","bet_id"]).astype(str)
+    # if no values at all, leave as empty strings
+    if df["parlay_group"].replace({"": np.nan}).notna().sum() == 0:
+        df["parlay_group"] = ""
+
+    # sport (optional)
+    if "sport" not in df.columns:
+        df["sport"] = coalesce_cols(df, ["league","sport_key","sportsbook_sport"]).fillna("nfl").astype(str)
+
+    return df
+
+@st.cache_data(show_spinner=False)
+def load_data():
+    paths = [
+        "exports/edges_graded_plus.csv",
+        "exports/edges_graded.csv",
+        "exports/edges.csv",
+    ]
+    df = _read_first_existing(paths)
+    return ensure_contract(df)
+
+def multiselect_safe(label, options, default_values, key):
+    """
+    Prevents 'default not in options' by intersecting.
+    """
+    opts = sorted([o for o in options if pd.notna(o)])
+    defaults = [d for d in default_values if d in opts]
+    return st.sidebar.multiselect(label, opts, defaults, key=key)
+
+# ------------- UI
+st.set_page_config(page_title="Backtest", layout="wide")
+
+st.title("Backtest")
+
+df = load_data()
+if df.empty:
+    st.warning("No data found. Expected one of: exports/edges_graded_plus.csv, exports/edges_graded.csv, exports/edges.csv.")
+    st.stop()
+
+# Sidebar: sport, season, week, market, settled
+sports = sorted(ensure_lower_str(df["sport"]).dropna().unique().tolist())
+sport_default = "nfl" if "nfl" in sports else (sports[0] if sports else "nfl")
+sport_sel = st.sidebar.selectbox("Sport", sports or ["nfl"], index=max((sports or ["nfl"]).index(sport_default), 0) if sports else 0, key="bk_sport")
+
+seasons = sorted([int(s) for s in pd.to_numeric(df["season"], errors="coerce").dropna().unique().tolist()])
+season_default = seasons[-1] if seasons else None
+season_sel = st.sidebar.selectbox("Season", seasons or ["—"], index=(len(seasons)-1 if seasons else 0), key="bk_season")
+
+wk_vals = sorted([int(w) for w in pd.to_numeric(df.query("season == @season_sel")["week"], errors="coerce").dropna().unique().tolist()]) if season_sel is not None else []
+week_default = wk_vals[-1] if wk_vals else None
+week_sel = st.sidebar.selectbox("Week", wk_vals or ["—"], index=(len(wk_vals)-1 if wk_vals else 0), key="bk_week")
+
+# Market multiselect with safe default(s)
+market_opts = sorted(df["market_norm"].dropna().unique().tolist())
+market_defaults = [m for m in ["spread","total","moneyline"] if m in market_opts] or (market_opts[:1] if market_opts else [])
+market_sel = multiselect_safe("Market(s)", market_opts, market_defaults, key="bk_markets")
+
+settled_only = st.sidebar.toggle("Settled only", value=True, key="bk_settled_only")
+
+# Parlay mode — unique key; disable if no grouping id present
+has_parlay_ids = df["parlay_group"].replace({"": np.nan}).notna().any()
+parlay_mode = st.sidebar.toggle("Parlay mode", value=False, key="bk_parlay_mode", help=("Group by parlay_id/slip_id if available." if has_parlay_ids else "No parlay grouping id found; toggle will have no effect."))
+
+# ------------- Filtering
+work = df.copy()
+
+if sport_sel:
+    work = work[ensure_lower_str(work["sport"]) == sport_sel]
+
+if season_sel is not None and season_sel != "—":
+    work = work[work["season"] == season_sel]
+
+if week_sel is not None and week_sel != "—":
+    work = work[work["week"] == week_sel]
+
+if market_sel:
+    work = work[work["market_norm"].isin(market_sel)]
+
+if settled_only:
+    work = work[work["settled_bool"] == True]
+
+# Guard: empty
+if work.empty:
+    st.info("No rows after filters. Try widening your filters.")
+    st.stop()
+
+# ------------- Sort & basic stats
+work = work.sort_values("sort_ts").reset_index(drop=True)
+
+# Quick KPIs if result is available
+if "result_norm" in work.columns:
+    vc = work["result_norm"].value_counts(dropna=False).to_dict()
+    c_win = int(vc.get("win", 0))
+    c_loss = int(vc.get("loss", 0))
+    c_push = int(vc.get("push", 0))
+    c_total = len(work)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Bets", f"{c_total:,}")
+    col2.metric("Wins", f"{c_win:,}")
+    col3.metric("Losses", f"{c_loss:,}")
+    col4.metric("Pushes", f"{c_push:,}")
+
+# ------------- Parlay handling (safe)
+if parlay_mode and has_parlay_ids:
+    grouped = work.groupby("parlay_group", dropna=False, as_index=False).agg({
+        "sort_ts":"max",
+        # Add your realized P/L aggregation here if you have odds/price columns
+        # e.g., "pl": "sum"
+    }).sort_values("sort_ts")
+    st.subheader("Parlay slips")
+    st.dataframe(grouped, use_container_width=True)
+else:
+    st.subheader("Individual bets")
+    show_cols = [c for c in ["sort_ts","season","week","sport","market","market_norm","result","result_norm","settled_bool","parlay_group"] if c in work.columns]
+    # Include common descriptive columns if present
+    for c in ["home_team","away_team","team","selection","book","price","odds","line","total","spread"]:
+        if c in work.columns: show_cols.append(c)
+    st.dataframe(work[show_cols].head(2000), use_container_width=True)
+
+# ------------- Footnote
+with st.expander("Debug / Data Summary"):
+    st.write("Rows:", len(work))
+    st.write("Columns:", list(work.columns))
+    st.write(work.head(5))

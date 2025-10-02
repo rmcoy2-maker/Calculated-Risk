@@ -1,0 +1,125 @@
+from __future__ import annotations
+import os
+from pathlib import Path
+from typing import Tuple
+import pandas as pd
+TZ = 'America/New_York'
+
+def _exports_dir() -> Path:
+    env = os.environ.get('EDGE_EXPORTS_DIR', '').strip()
+    if env:
+        p = Path(env)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    here = Path(__file__).resolve()
+    for up in [here.parent] + list(here.parents):
+        if (up / 'exports').exists():
+            (up / 'exports').mkdir(parents=True, exist_ok=True)
+            return up / 'exports'
+    p = Path.cwd() / 'exports'
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+CART = _exports_dir() / 'parlay_cart.csv'
+CANON_COLS = ['ts_utc', 'source_page', 'date_iso', 'game_id', 'home', 'away', 'market', 'side', 'line', 'odds', 'book', 'decimal', 'p_win', 'ev_per_$1']
+
+def _now_iso() -> str:
+    return pd.Timestamp.now(tz='UTC').isoformat()
+
+def read_cart() -> pd.DataFrame:
+    if CART.exists() and CART.stat().st_size > 0:
+        try:
+            return pd.read_csv(CART, low_memory=False)
+        except Exception:
+            pass
+    return pd.DataFrame(columns=CANON_COLS)
+
+def clear_cart():
+    try:
+        if CART.exists():
+            CART.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def _to_decimal(american):
+    try:
+        o = float(american)
+    except Exception:
+        return float('nan')
+    if o >= 100:
+        return 1.0 + o / 100.0
+    if o <= -100:
+        return 1.0 + 100.0 / abs(o)
+    return float('nan')
+
+def normalize_candidates(df: pd.DataFrame) -> pd.DataFrame:
+    low = {c.lower(): c for c in df.columns}
+
+    def pick(*cands):
+        for c in cands:
+            if c in low:
+                return low[c]
+        return None
+    col_gid = pick('game_id', 'gid', 'ref', 'game')
+    col_home = pick('home', 'home_team')
+    col_away = pick('away', 'away_team')
+    col_mkt = pick('market', '_market_norm', 'market_norm')
+    col_side = pick('side', 'selection')
+    col_line = pick('line', 'point', 'points', 'total', 'spread')
+    col_odds = pick('odds', 'price', 'american', 'price_american', 'american_odds')
+    col_book = pick('book', 'sportsbook', 'bk')
+    col_p = pick('p_win', 'prob', 'model_p', 'win_prob', 'p', 'prob_win')
+    col_ev = pick('ev', '_ev_per_$1', 'ev_std')
+    col_date = pick('_date_iso', 'date', 'game_date', 'commence_time')
+    out = pd.DataFrame(index=df.index)
+    out['ts_utc'] = _now_iso()
+    out['source_page'] = ''
+    if col_date:
+        s = pd.to_datetime(df[col_date], errors='coerce', utc=True)
+        out['date_iso'] = s.dt.tz_convert(TZ).dt.strftime('%Y-%m-%d')
+    else:
+        out['date_iso'] = pd.NA
+    out['game_id'] = df[col_gid] if col_gid else ''
+    out['home'] = df[col_home] if col_home else ''
+    out['away'] = df[col_away] if col_away else ''
+    out['market'] = df[col_mkt] if col_mkt else ''
+    out['side'] = df[col_side] if col_side else ''
+    out['line'] = pd.to_numeric(df[col_line], errors='coerce') if col_line else pd.NA
+    out['odds'] = pd.to_numeric(df[col_odds], errors='coerce') if col_odds else pd.NA
+    out['book'] = df[col_book] if col_book else ''
+    out['decimal'] = out['odds'].apply(_to_decimal)
+    out['p_win'] = pd.to_numeric(df[col_p], errors='coerce') if col_p else pd.NA
+    if col_ev:
+        out['ev_per_$1'] = pd.to_numeric(df[col_ev], errors='coerce')
+    else:
+        b = out['decimal'] - 1.0
+        out['ev_per_$1'] = out['p_win'] * b - (1.0 - out['p_win'])
+    return out[CANON_COLS]
+
+def add_to_cart(cands: pd.DataFrame, source_page: str, allow_same_game: bool=False, one_per_market_per_game: bool=True) -> Tuple[int, int]:
+    if cands is None or len(cands) == 0:
+        return (0, 0)
+    work = normalize_candidates(cands).copy()
+    work['source_page'] = source_page
+    cart = read_cart()
+
+    def _key(df: pd.DataFrame) -> pd.Series:
+        return df['game_id'].astype(str) + '|' + df['market'].astype(str) + '|' + df['side'].astype(str) + '|' + df['book'].astype(str) + '|' + df['line'].astype(str) + '|' + df['odds'].astype(str)
+    work['_key'] = _key(work)
+    if not cart.empty:
+        cart['_key'] = _key(cart)
+    else:
+        cart['_key'] = pd.Series([], dtype='string')
+    if not allow_same_game and 'game_id' in cart.columns and (not cart.empty):
+        bad_games = set(cart['game_id'].dropna().astype(str))
+        work = work[~work['game_id'].astype(str).isin(bad_games)]
+    if one_per_market_per_game and (not cart.empty):
+        existing = set(cart['game_id'].astype(str) + '|' + cart['market'].astype(str))
+        newmask = ~(work['game_id'].astype(str) + '|' + work['market'].astype(str)).isin(existing)
+        work = work[newmask]
+    if not cart.empty:
+        work = work[~work['_key'].isin(cart['_key'])]
+    added = len(work)
+    if added:
+        out = pd.concat([cart.drop(columns=['_key'], errors='ignore'), work.drop(columns=['_key'])], ignore_index=True)
+        out.to_csv(CART, index=False)
+    return (added, 0)

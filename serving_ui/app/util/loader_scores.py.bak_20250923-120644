@@ -1,0 +1,12 @@
+import os
+import pandas as pd
+
+ROOT = r"C:/Projects/edge-finder"  # adjust if needed
+
+def load_edges_or_scores():
+    scored = os.path.join(ROOT, "exports", "parlay_scores.csv")
+    base   = os.path.join(ROOT, "exports", "edges.csv")
+    p = scored if os.path.exists(scored) else base
+    df = pd.read_csv(p, low_memory=False)
+    df.columns = [c.strip().lower() for c in df.columns]
+    return df, p

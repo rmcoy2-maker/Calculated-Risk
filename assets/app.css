@@ -1,0 +1,8 @@
+﻿/* tighten spacing */
+.block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
+/* headers */
+h1,h2,h3 { letter-spacing: 0.3px; }
+/* cards/tables look */
+.dataframe, .stDataFrame { border-radius: 8px; overflow: hidden; }
+/* buttons */
+.stButton>button { border-radius: 8px; }

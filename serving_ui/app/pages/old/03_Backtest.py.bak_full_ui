@@ -1,0 +1,325 @@
+from __future__ import annotations
+import sys, json, math, datetime as dt
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ---------- Paths ----------
+HERE = Path(__file__).resolve()
+APP_DIR  = HERE.parents[1]          # .../serving_ui/app
+REPO_DIR = APP_DIR.parents[1]       # repo root
+EXPORTS  = REPO_DIR / "exports"
+BETLOG   = EXPORTS / "bets_log.csv"
+
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
+
+st.set_page_config(page_title="Backtest · Calculated Risk", page_icon="📈", layout="wide")
+st.title("Backtest")
+
+# ---------- IO ----------
+@st.cache_data(show_spinner=False)
+def _read_csv_safe(path: Path) -> pd.DataFrame:
+    """
+    Read a CSV if it exists and is non-empty; otherwise return an empty DataFrame.
+    Standardizes columns to lowercase without surrounding whitespace.
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return pd.DataFrame()
+        # Force UTF-8 with BOM handling in case the file has one
+        df = pd.read_csv(path, encoding="utf-8-sig")
+        df.columns = [c.strip().lower() for c in df.columns]
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# ---------- Helpers ----------
+def american_to_decimal(odds: float) -> float:
+    o = float(odds)
+    return 1.0 + (o/100.0 if o > 0 else 100.0/abs(o))
+
+def settle_row(r) -> tuple[float, bool]:
+    try:
+        stake = float((r.get("stake", 0) if hasattr(r, "get") else r["stake"]) or 0)
+        odds  = float((r.get("odds", 0)  if hasattr(r, "get") else r["odds"])  or 0)
+        res   = (r.get("result","") if hasattr(r,"get") else r.get("result",""))
+        res   = str(res or "").lower()
+        dec   = american_to_decimal(odds)
+        if res in ("win","won","w"):   return stake * (dec - 1.0), True
+        if res in ("lose","lost","l"): return -stake, True
+        if res in ("push","void","cancel","canceled","cancelled"): return 0.0, True
+        return 0.0, False
+    except Exception:
+        return 0.0, False
+
+def classify_market(val: str) -> str:
+    t = str(val or "").lower()
+    groups = {
+        "Moneyline":   ["ml","moneyline","money line","money-line"],
+        "Spread":      ["spread","ats","handicap","point spread"],
+        "Total (O/U)": ["total","totals","o/u","over/under","ou"],
+        "Props":       ["prop","props","player","passing","rushing","receiving","td","interception","tackles","sacks"],
+        "Parlay":      ["parlay"],
+    }
+    for g, kws in groups.items():
+        if any(kw in t for kw in kws): return g
+    if t == "total": return "Total (O/U)"
+    return "Other"
+
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    x = df.copy()
+    x.columns = [c.strip().lower() for c in x.columns]
+
+    # soft ensure columns we use later
+    for c in ["stake","odds","p_win","result","market","placed_at","ts","season","week"]:
+        if c not in x.columns: x[c] = None
+
+    # numeric casts
+    for c in ("stake","odds","p_win"):
+        x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    # timestamps
+    placed = pd.to_datetime(x.get("placed_at"), errors="coerce", utc=True)
+    ts     = pd.to_datetime(x.get("ts"), errors="coerce", utc=True)
+    x["placed_at"] = placed.where(placed.notna(), ts)
+
+    # infer season/week when missing
+    x["season"] = pd.to_numeric(x.get("season"), errors="coerce")
+    if "season" in x and x["season"].isna().all():
+        x["season"] = x["placed_at"].dt.year
+    x["season"] = x["season"].astype("Int64")
+
+    w = pd.to_numeric(x.get("week"), errors="coerce")
+    if w is None or (hasattr(w,"isna") and w.isna().all()):
+        x["week"] = x["placed_at"].dt.isocalendar().week.astype("Int64")
+    else:
+        x["week"] = w.astype("Int64")
+
+    # market grouping
+    x["market_group"] = x["market"].apply(classify_market)
+    return x
+
+def compute_realized_pnl(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty: return df
+    if "pnl" in df and pd.to_numeric(df["pnl"], errors="coerce").fillna(0).abs().sum() > 0:
+        return df
+    pnl = []
+    for _, r in df.iterrows():
+        v, settled = settle_row(r)
+        pnl.append(v if settled else 0.0)
+    df = df.copy()
+    df["pnl"] = pnl
+    return df
+
+# ---------- Load ----------
+bets = normalize(_read_csv_safe(BETLOG))
+st.caption(f"Reading: {BETLOG}")
+
+if bets.empty:
+    st.warning("No bets found. Populate exports/bets_log.csv.")
+    st.stop()
+
+bets = compute_realized_pnl(bets)
+
+# ---------- Filters (in-body) ----------
+st.subheader("Filters")
+
+with st.form("bt_filters"):
+    colL, colR = st.columns(2)
+
+    with colL:
+        seasons = sorted([int(s) for s in pd.Series(bets["season"]).dropna().unique()])
+        default_seasons = seasons[-1:] if seasons else []
+        sel_seasons = st.multiselect("Season", seasons, default=default_seasons)
+
+        groups = sorted(pd.Series(bets["market_group"]).dropna().unique().tolist())
+        sel_groups = st.multiselect("Market groups", groups, default=groups)
+
+        min_dt = pd.to_datetime(bets["placed_at"]).min()
+        max_dt = pd.to_datetime(bets["placed_at"]).max()
+        date_from, date_to = st.date_input(
+            "Placed date range",
+            value=(min_dt.date() if pd.notna(min_dt) else dt.date.today(),
+                   max_dt.date() if pd.notna(max_dt) else dt.date.today()),
+            format="YYYY-MM-DD"
+        )
+
+    with colR:
+        weeks = sorted([int(w) for w in pd.Series(bets["week"]).dropna().unique()])
+        default_weeks = weeks if len(weeks) <= 18 else weeks[-18:]
+        sel_weeks = st.multiselect("Week", weeks, default=default_weeks)
+
+        result_opts = ["win","lose","push","open/unknown"]
+        sel_result  = st.multiselect("Result status", result_opts, default=result_opts)
+
+        with st.expander("Advanced filters", expanded=False):
+            min_odds = int(pd.to_numeric(bets["odds"], errors="coerce").min(skipna=True) or -1000)
+            max_odds = int(pd.to_numeric(bets["odds"], errors="coerce").max(skipna=True) or 1000)
+            lo = st.number_input("Min odds (American)", value=min_odds, step=5, key="adv_min_odds")
+            hi = st.number_input("Max odds (American)", value=max_odds, step=5, key="adv_max_odds")
+
+            # quick presets
+            preset = st.radio("Quick preset", ["All", "Sides only (ML/Spread)", "Totals only", "Props only"], index=0, horizontal=True)
+            if preset == "Sides only (ML/Spread)":
+                sel_groups = [g for g in sel_groups if g in ("Moneyline","Spread")]
+            elif preset == "Totals only":
+                sel_groups = [g for g in sel_groups if g == "Total (O/U)"]
+            elif preset == "Props only":
+                sel_groups = [g for g in sel_groups if g == "Props"]
+
+    run = st.form_submit_button("▶ Run Backtest", use_container_width=True)
+
+# ---------- Apply filters only when Run is pressed ----------
+if run or "bt_last" not in st.session_state:
+    st.session_state["bt_last"] = {
+        "sel_seasons": sel_seasons, "sel_weeks": sel_weeks, "sel_groups": sel_groups,
+        "sel_result": sel_result, "date_from": date_from, "date_to": date_to,
+        "lo": float(lo) if "lo" in locals() else -1000, "hi": float(hi) if "hi" in locals() else 1000,
+    }
+
+cfg = st.session_state["bt_last"]
+mask = pd.Series(True, index=bets.index)
+
+if cfg["sel_seasons"]:
+    mask &= bets["season"].isin(cfg["sel_seasons"])
+if cfg["sel_weeks"]:
+    mask &= bets["week"].isin(cfg["sel_weeks"])
+if cfg["sel_groups"]:
+    mask &= bets["market_group"].isin(cfg["sel_groups"])
+
+# Result filter
+if cfg["sel_result"] and len(cfg["sel_result"]) < 4:
+    r = bets.get("result","").astype(str).str.lower()
+    open_mask = ~r.isin(["win","won","w","lose","lost","l","push","void","cancel","canceled","cancelled"])
+    conds = []
+    if "win" in cfg["sel_result"]:  conds.append(r.isin(["win","won","w"]))
+    if "lose" in cfg["sel_result"]: conds.append(r.isin(["lose","lost","l"]))
+    if "push" in cfg["sel_result"]: conds.append(r.isin(["push","void","cancel","canceled","cancelled"]))
+    if "open/unknown" in cfg["sel_result"]: conds.append(open_mask)
+    if conds:
+        res_mask = conds[0]
+        for c in conds[1:]: res_mask |= c
+        mask &= res_mask
+
+# Date range
+if isinstance(cfg["date_from"], dt.date) and isinstance(cfg["date_to"], dt.date):
+    dfrom = pd.Timestamp(cfg["date_from"])
+    dto   = pd.Timestamp(cfg["date_to"]) + pd.Timedelta(days=1)
+    _pa = pd.to_datetime(bets["placed_at"], errors="coerce", utc=True).dt.tz_localize(None)
+    mask &= (_pa >= dfrom) & (_pa < dto)
+
+# Odds window
+bets["odds_num"] = pd.to_numeric(bets["odds"], errors="coerce")
+mask &= (bets["odds_num"] >= cfg["lo"]) & (bets["odds_num"] <= cfg["hi"])
+
+filtered = bets[mask].copy()
+
+# ---------- Summary ----------
+total_staked = float(pd.to_numeric(filtered.get("stake"), errors="coerce").fillna(0).sum())
+realized_pnl = float(pd.to_numeric(filtered.get("pnl"), errors="coerce").fillna(0).sum())
+roi = (realized_pnl / total_staked) if total_staked else np.nan
+
+wins = (filtered.get("result","").astype(str).str.lower().isin(["win","won","w"]).sum()
+        if "result" in filtered else np.nan)
+losses = (filtered.get("result","").astype(str).str.lower().isin(["lose","lost","l"]).sum()
+          if "result" in filtered else np.nan)
+pushes = (filtered.get("result","").astype(str).str.lower().isin(["push","void","cancel","canceled","cancelled"]).sum()
+          if "result" in filtered else np.nan)
+
+c1,c2,c3,c4,c5 = st.columns(5)
+with c1: st.metric("Bets", f"{len(filtered):,}")
+with c2: st.metric("Wins",   f"{wins}"   if wins==wins     else "—")
+with c3: st.metric("Losses", f"{losses}" if losses==losses else "—")
+with c4: st.metric("Pushes", f"{pushes}" if pushes==pushes else "—")
+with c5: st.metric("ROI", f"{roi*100:.2f}%" if roi==roi else "—")
+
+# ---------- Equity Curve & Drawdown ----------
+st.subheader("Bankroll equity & drawdown")
+
+start_bank = st.number_input("Starting bankroll (units)", min_value=0.0, value=100.0, step=10.0, help="Used for the bankroll line")
+
+def _equity_table(df: pd.DataFrame, start_bankroll: float) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["placed_at","bankroll","running_max","drawdown"])
+    x = df.sort_values("placed_at").copy()
+    x["pnl_realized"] = pd.to_numeric(x.get("pnl"), errors="coerce").fillna(0.0)
+    x["equity"] = x["pnl_realized"].cumsum()  # cumulative PnL in units
+    x["bankroll"] = float(start_bankroll) + x["equity"]
+    x["running_max"] = x["bankroll"].cummax()
+    x["drawdown"] = x["bankroll"] - x["running_max"]
+    return x[["placed_at","bankroll","running_max","drawdown"]]
+
+curve = _equity_table(filtered, start_bank)
+
+# draw chart WITHOUT Altair (avoid jinja2 import); use matplotlib instead
+if not curve.empty:
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+
+    # slightly smaller fonts for legibility
+    mpl.rcParams.update({"axes.titlesize": 18, "axes.labelsize": 12, "xtick.labelsize": 10, "ytick.labelsize": 10})
+
+    fig = plt.figure()
+    ax = fig.gca()
+    plot_df = curve.assign(placed_at=pd.to_datetime(curve["placed_at"], utc=True).dt.tz_localize(None)).set_index("placed_at")
+    plot_df[["bankroll","running_max"]].plot(ax=ax, legend=True)
+    ax.set_xlabel("Placed at")
+    ax.set_ylabel("Units")
+    ax.set_title("Equity Curve")
+    st.pyplot(fig, use_container_width=True)
+
+    # max and longest drawdown
+    max_dd_units = float(curve["drawdown"].min())
+    in_dd = curve["bankroll"] < curve["running_max"]
+    # longest consecutive in-drawdown stretch (bets)
+    longest_dd = 0
+    current = 0
+    for v in in_dd:
+        if v: current += 1
+        else:
+            longest_dd = max(longest_dd, current)
+            current = 0
+    longest_dd = max(longest_dd, current)
+
+    c1, c2 = st.columns(2)
+    with c1: st.metric("Max drawdown (units)", f"{max_dd_units:.2f}")
+    with c2: st.metric("Longest drawdown (bets)", f"{longest_dd}")
+
+    with st.expander("Equity data"):
+        st.dataframe(curve, use_container_width=True, height=240)
+else:
+    st.info("No points to chart after filters.")
+
+# ---------- Breakdowns ----------
+left, right = st.columns(2)
+
+with left:
+    st.subheader("By season / week")
+    grp = (filtered.assign(season=filtered["season"].astype("Int64"),
+                           week=filtered["week"].astype("Int64"))
+            .groupby(["season","week"], dropna=False)
+            .agg(bets=("season","size"),
+                 staked=("stake","sum"),
+                 pnl=("pnl","sum"))
+            .assign(roi=lambda d: d["pnl"]/d["staked"].replace(0,np.nan))
+            .reset_index()
+          )
+    st.dataframe(grp.sort_values(["season","week"]), use_container_width=True, height=350)
+
+with right:
+    st.subheader("By market group")
+    bym = (filtered.groupby("market_group", dropna=False)
+                  .agg(bets=("market_group","size"),
+                       staked=("stake","sum"),
+                       pnl=("pnl","sum"))
+                  .assign(roi=lambda d: d["pnl"]/d["staked"].replace(0,np.nan))
+                  .reset_index())
+    st.dataframe(bym.sort_values("bets", ascending=False), use_container_width=True, height=350)
+
+st.subheader("Bet log")
+st.dataframe(filtered.sort_values("placed_at").reset_index(drop=True), use_container_width=True)

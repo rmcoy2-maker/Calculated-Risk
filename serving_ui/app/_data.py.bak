@@ -1,0 +1,50 @@
+import os
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+import streamlit as st
+from app.lib.access import live_enabled
+
+def refresh_button(label: str = "🔄 Refresh data", key: str = "__refresh__"):
+    if not live_enabled():
+        st.button(label, key=key, disabled=True)
+        st.caption("Beta mode: refresh is disabled (showing cached files from /exports).")
+        return False
+    return st.button(label, key=key)
+
+DEFAULT_EXPORTS = r"C:\Projects\edge-finder\exports"
+
+def _exports_dir() -> Path:
+    return Path(os.environ.get("EDGE_EXPORTS_DIR", DEFAULT_EXPORTS))
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_csv(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
+
+def load_snapshots() -> pd.DataFrame:
+    p = _exports_dir() / "lines_snapshots.csv"
+    return _load_csv(p) if p.exists() else pd.DataFrame()
+
+def load_open_close() -> pd.DataFrame:
+    p = _exports_dir() / "lines_open_close.csv"
+    return _load_csv(p) if p.exists() else pd.DataFrame()
+
+def get_data():
+    return load_snapshots(), load_open_close()
+
+def latest_snapshot_caption() -> str:
+    try:
+        snap = load_snapshots()
+        if "_snapshot_ts_utc" in snap.columns and len(snap):
+            ts = pd.to_datetime(snap["_snapshot_ts_utc"], errors="coerce").max()
+            return f"latest snapshot (UTC): {ts}"
+    except Exception:
+        pass
+    return "latest snapshot: n/a"
+
+def refresh_button(label: str = "🔄 Refresh data", key: str = "__refresh__"):
+    if st.button(label, key=key):
+        st.cache_data.clear()
+        st.rerun()
+
+

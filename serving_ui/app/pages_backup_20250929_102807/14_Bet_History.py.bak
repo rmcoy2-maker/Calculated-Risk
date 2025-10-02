@@ -1,0 +1,289 @@
+from __future__ import annotations
+import streamlit as st
+from app.lib.auth import login, show_logout
+# === Auth (auto-injected) ===
+import streamlit as st  # ensured
+from app.lib.auth import login, show_logout
+
+auth = login(required=False)   # or required=True for protected pages
+if not auth.authenticated:
+    st.info("You are in read-only mode.")
+show_logout()  # sidebar logout
+# === /Auth (auto-injected) ===
+from __future__ import annotations
+import streamlit as st
+# --- import bootstrap so 'app' package is importable when run from anywhere ---
+import sys
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+# file: .../serving_ui/app/pages/<page>.py  -> parents[2] = .../serving_ui
+_SERVING_UI = _HERE.parents[2]
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+# -----------------------------------------------------------------------------import streamlit as st
+st.set_page_config(page_title='14 Bet History', page_icon='📈', layout='wide')
+
+import streamlit as st
+
+import streamlit as st
+
+
+import streamlit as st
+
+# --- diagnostics import (robust) ---
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        # add repo/serving_ui to sys.path so 'app' is importable
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            # fallback if pages run with CWD=app
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+            def mount_in_sidebar(page_name: str):
+                return None
+# --- /diagnostics import (robust) ---
+# serving_ui/app/pages/14_Bet_History.py
+import sys, io
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# --- widen content
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- repo paths
+HERE  = Path(__file__).resolve()
+REPO  = HERE.parents[3]
+EXP   = REPO / "exports"
+BETLOG = EXP / "bets_log.csv"
+SCORES_CANDIDATES = [EXP / "scores_1966-2025.csv", EXP / "scores_normalized_std_maxaligned.csv"]
+
+st.title("📜 Bet History")
+st.caption(f"Using log: {BETLOG}")
+
+# -------- helpers (short versions; independent of Backtest) --------
+def _s(x): 
+    if isinstance(x, pd.Series): return x.astype("string").fillna("")
+    return pd.Series([x], dtype="string")
+def _nickify(s: pd.Series) -> pd.Series:
+    _ALIAS = {"REDSKINS":"COMMANDERS","WASHINGTON":"COMMANDERS","FOOTBALL":"COMMANDERS",
+              "OAKLAND":"RAIDERS","LV":"RAIDERS","LAS":"RAIDERS","VEGAS":"RAIDERS",
+              "SD":"CHARGERS","LA":"RAMS","STL":"RAMS"}
+    s = _s(s).str.upper().str.replace(r"[^A-Z0-9 ]+","",regex=True).str.strip().replace(_ALIAS)
+    return s.str.replace(r"\s+","_",regex=True)
+def _int_str(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").astype("Int64").astype("string").fillna("")
+def _market_norm(s: pd.Series) -> pd.Series:
+    s = _s(s).str.upper().str.replace(r"\s+","",regex=True)
+    return s.replace({"MONEYLINE":"H2H","ML":"H2H","SPREAD":"SPREADS","ATS":"SPREADS","TOTAL":"TOTALS","TOTALSPOINTS":"TOTALS","OU":"TOTALS","O/U":"TOTALS"})
+def _pick_team_series(df: pd.DataFrame) -> pd.Series:
+    if "_pick_team" in df.columns and df["_pick_team"].astype(str).str.strip().ne("").any():
+        return _nickify(df["_pick_team"])
+    side = _s(df.get("side","")).str.upper()
+    return np.where(side=="HOME", df.get("_home_nick",""), np.where(side=="AWAY", df.get("_away_nick",""), "")).astype("string")
+def _american_profit_per_dollar(odds: float, result: str) -> float:
+    if pd.isna(odds) or result not in {"WIN","LOSE","PUSH","VOID"}:
+        return np.nan
+    if result in {"PUSH","VOID"}:
+        return 0.0
+    if odds >= 100:
+        return (odds / 100.0) if result == "WIN" else -1.0
+    else:
+        return (100.0 / abs(odds)) if result == "WIN" else -1.0
+
+
+
+def _normalize_scores(sc: pd.DataFrame) -> pd.DataFrame:
+    s = sc.copy()
+    date_raw = _s(s.get("Date", s.get("_Date", s.get("date",""))))
+    s["_DateISO"] = pd.to_datetime(date_raw, errors="coerce").dt.date.astype("string").fillna("")
+    s["_season"] = _int_str(_s(s.get("season", s.get("Season",""))))
+    s["_week"]   = _int_str(_s(s.get("week", s.get("Week",""))))
+    s["_home_nick"] = _nickify(_s(s.get("home_team", s.get("HomeTeam", s.get("_home_nick","")))))
+    s["_away_nick"] = _nickify(_s(s.get("away_team", s.get("AwayTeam", s.get("_away_nick","")))))
+    s["home_score"] = pd.to_numeric(s.get("HomeScore", s.get("home_score")), errors="coerce")
+    s["away_score"] = pd.to_numeric(s.get("AwayScore", s.get("away_score")), errors="coerce")
+    ymd = pd.to_datetime(s["_DateISO"], errors="coerce").dt.strftime("%Y%m%d").fillna("")
+    s["_key_date"] = (ymd + "_" + s["_away_nick"] + "_AT_" + s["_home_nick"]).str.strip("_")
+    s["_key_home_sw"] = s["_home_nick"] + "|" + s["_season"] + "|" + s["_week"]
+    s["_key_away_sw"] = s["_away_nick"] + "|" + s["_season"] + "|" + s["_week"]
+    return s.astype({"_key_date":"string","_key_home_sw":"string","_key_away_sw":"string"})
+
+def _attach_scores_generic(df: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    e = df.copy()
+    sc = scores[["_key_date","_key_home_sw","_key_away_sw","home_score","away_score"]].copy()
+    merged = e.merge(sc[["_key_date","home_score","away_score"]], on="_key_date", how="left")
+    miss = merged["home_score"].isna() | merged["away_score"].isna()
+    if miss.any():
+        fb = e.loc[miss, ["_key_home_sw","_key_away_sw"]].merge(sc, on=["_key_home_sw","_key_away_sw"], how="left").set_index(e.loc[miss].index)
+        for c in ("home_score","away_score"):
+            merged.loc[miss, c] = fb[c]
+    merged["_joined_with_scores"] = (~merged["home_score"].isna()) & (~merged["away_score"].isna())
+    return merged
+
+def _settle_minimal(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    d["market_norm"] = _market_norm(d.get("market",""))
+    d["_pick_nick"]  = _pick_team_series(d)
+    hs = pd.to_numeric(d.get("home_score"), errors="coerce")
+    as_ = pd.to_numeric(d.get("away_score"), errors="coerce")
+    line = pd.to_numeric(d.get("line", d.get("spread", d.get("total"))), errors="coerce")
+    price = pd.to_numeric(d.get("price", d.get("odds")), errors="coerce")
+    winner = np.where(hs > as_, d.get("_home_nick",""), np.where(as_ > hs, d.get("_away_nick",""), ""))
+    result = np.full(len(d), "VOID", dtype=object)
+    is_ml = d["market_norm"].eq("H2H")
+    result[is_ml] = np.where(pd.Series(winner,index=d.index)[is_ml].eq(""), "PUSH",
+                      np.where(d.loc[is_ml, "_pick_nick"].eq(pd.Series(winner,index=d.index)[is_ml]), "WIN",
+                               np.where(d.loc[is_ml, "_pick_nick"].eq(""), "VOID", "LOSE")))
+    is_spread = d["market_norm"].eq("SPREADS")
+    if is_spread.any():
+        margin = hs - as_
+        picked = np.where(d.loc[is_spread, "_pick_nick"].eq(d.loc[is_spread, "_home_nick"]), line[is_spread], -line[is_spread])
+        result[is_spread] = np.where(margin[is_spread] > picked, "WIN", np.where(margin[is_spread] < picked, "LOSE", "PUSH"))
+    is_totals = d["market_norm"].eq("TOTALS")
+    if is_totals.any():
+        side = _s(d.get("side","")).str.upper()
+        total_pts = hs + as_
+        result[is_totals] = np.where(total_pts[is_totals] == line[is_totals], "PUSH",
+                              np.where((side[is_totals].eq("OVER") & (total_pts[is_totals] > line[is_totals])) |
+                                       (side[is_totals].eq("UNDER") & (total_pts[is_totals] < line[is_totals])), "WIN", "LOSE"))
+    d["_result"] = pd.Series(result, index=d.index, dtype="string")
+    d["_profit_per_$1"] = [_american_profit_per_dollar(o, r) for o, r in zip(price, d["_result"])]
+
+    return d
+
+# -------- load bet log --------
+if not BETLOG.exists():
+    st.info("No bet log found yet.")
+    with st.expander("Diagnostics"):
+        st.write("Expected path:", str(BETLOG))
+    st.stop()
+
+bets = pd.read_csv(BETLOG, encoding="utf-8-sig", low_memory=False)
+st.caption(f"Rows: {len(bets):,}")
+
+# Try to attach scores (if keys exist in log)
+need_cols = {"_key_date","_key_home_sw","_key_away_sw"}
+if need_cols.issubset(set(bets.columns)):
+    # find scores file
+    spath = next((p for p in SCORES_CANDIDATES if p.exists()), None)
+    if spath:
+        scores = pd.read_csv(spath, low_memory=False)
+        # normalize scores minimally
+        if not {"_key_date","_key_home_sw","_key_away_sw","home_score","away_score"} <= set(scores.columns):
+            scores = _normalize_scores(scores)
+        bets = _attach_scores_generic(bets, scores)
+        st.caption(f"With scores joined: {int(bets['_joined_with_scores'].sum()):,} matched")
+        bets = _settle_minimal(bets)
+
+# show table
+st.dataframe(bets, use_container_width=True)
+
+# Metrics (if we have results)
+if "_result" in bets.columns:
+    st.subheader("Metrics")
+    bets["market_norm"] = _market_norm(bets.get("market",""))
+    if "_pick_nick" not in bets.columns or bets["_pick_nick"].eq("").all():
+        bets["_pick_nick"] = _pick_team_series(bets)
+
+    team_tbl = bets.assign(
+        is_win=bets["_result"].eq("WIN"),
+        is_loss=bets["_result"].eq("LOSE"),
+        is_push=bets["_result"].eq("PUSH"),
+    ).groupby("_pick_nick", dropna=False).agg(
+        bets=("market_norm","size"),
+        wins=("is_win","sum"),
+        losses=("is_loss","sum"),
+        pushes=("is_push","sum"),
+        profit=("_profit_per_$1","sum"),
+        roi_per_bet=("_profit_per_$1","mean"),
+    ).reset_index().rename(columns={"_pick_nick":"team"}).sort_values("profit", ascending=False)
+
+    kind_tbl = bets.groupby("market_norm", dropna=False).agg(
+        bets=("market_norm","size"),
+        wins=(lambda x: (bets.loc[x.index, "_result"]=="WIN").sum()),
+        losses=(lambda x: (bets.loc[x.index, "_result"]=="LOSE").sum()),
+        pushes=(lambda x: (bets.loc[x.index, "_result"]=="PUSH").sum()),
+        profit=("_profit_per_$1","sum"),
+        roi_per_bet=("_profit_per_$1","mean"),
+    ).reset_index().rename(columns={"market_norm":"market"}).sort_values("profit", ascending=False)
+
+    c1,c2 = st.columns(2)
+    with c1:
+        st.caption("Team performance (your bets)")
+        st.dataframe(team_tbl, use_container_width=True, hide_index=True)
+        b1 = io.StringIO(); team_tbl.to_csv(b1, index=False, encoding="utf-8-sig")
+        st.download_button("Download team performance CSV", b1.getvalue(), "bet_history_team_performance.csv", "text/csv")
+    with c2:
+        st.caption("Bet performance by market")
+        st.dataframe(kind_tbl, use_container_width=True, hide_index=True)
+        b2 = io.StringIO(); kind_tbl.to_csv(b2, index=False, encoding="utf-8-sig")
+        st.download_button("Download bet-type breakdown CSV", b2.getvalue(), "bet_history_bet_types.csv", "text/csv")
+# ===== Enhanced Bet History Analytics =====
+if "_result" in bets.columns:
+    st.subheader("More breakdowns")
+    # by book
+    if "book" in bets.columns:
+        rc = bets.groupby("book")["_result"].value_counts().unstack(fill_value=0)
+        for col in ["WIN","LOSE","PUSH"]:
+            if col not in rc.columns: rc[col]=0
+        bk = bets.groupby("book")["_profit_per_$1"].agg(["sum","mean"])
+        book_tbl = (pd.concat([bets.groupby("book").size().rename("bets"),
+                               rc["WIN"].rename("wins"), rc["LOSE"].rename("losses"), rc["PUSH"].rename("pushes"),
+                               bk["sum"].rename("profit"), bk["mean"].rename("roi_per_bet")], axis=1)
+                    .reset_index().sort_values("profit", ascending=False))
+        st.caption("By sportsbook")
+        st.dataframe(book_tbl, use_container_width=True, hide_index=True)
+
+    # Line buckets
+    def _bucket_series(df):
+        df = df.copy()
+        df["market_norm"] = _market_norm(df.get("market",""))
+        ln = pd.to_numeric(df.get("line", df.get("spread", df.get("total"))), errors="coerce")
+        out = pd.Series(["other"]*len(df), index=df.index)
+        is_sp = df["market_norm"].eq("SPREADS")
+        is_to = df["market_norm"].eq("TOTALS")
+        out[is_sp] = pd.cut(ln[is_sp], bins=[-40,-14.5,-7.5,-3.5,-0.5,0.5,3.5,7.5,14.5,40],
+                            labels=["≤-15","-15..-8","-7.5..-4","-3.5..-1","PK","1..3.5","4..7.5","8..14.5","≥15"], include_lowest=True).astype("string")
+        out[is_to] = pd.cut(ln[is_to], bins=[0,35,41,45,49,53,57,65,100],
+                            labels=["<35","35-41","41-45","45-49","49-53","53-57","57-65",">65"], include_lowest=True).astype("string")
+        return out.astype("string")
+
+    bets["_line_bucket"] = _bucket_series(bets)
+    lb = bets.groupby("_line_bucket")["_profit_per_$1"].agg(['size','sum','mean']).reset_index()\
+             .rename(columns={"size":"bets","sum":"profit","mean":"roi_per_bet"})\
+             .sort_values("profit", ascending=False)
+    st.caption("By line bucket")
+    st.dataframe(lb, use_container_width=True, hide_index=True)
+
+    # Cumulative P&L curve (assumes 1u per bet)
+    st.subheader("Cumulative P&L (units)")
+    # best-effort date for ordering
+    cand_dt = bets.get("_DateISO", bets.get("_date_iso", bets.get("date", bets.get("commence_time", ""))))
+    dt = pd.to_datetime(cand_dt, errors="coerce")
+    pnl = bets.assign(_dt=dt, _p=bets["_profit_per_$1"].fillna(0)).sort_values("_dt")["_p"].cumsum()
+    st.line_chart(pnl, use_container_width=True)
+
+# Always allow full-log download
+buf = io.StringIO(); bets.to_csv(buf, index=False, encoding="utf-8-sig")
+st.download_button("Download full bet log CSV", buf.getvalue(), "bets_log_full.csv", "text/csv")
+
+
+
+
+
+
+
+
+

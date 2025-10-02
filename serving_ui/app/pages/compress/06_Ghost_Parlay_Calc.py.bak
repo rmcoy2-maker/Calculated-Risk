@@ -1,0 +1,217 @@
+
+from __future__ import annotations
+# -*- coding: utf-8 -*-
+
+import math
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from lib.io_paths import autoload_edges, clear_loader_cache
+from lib.enrich import add_probs_and_ev, attach_teams
+
+
+# ------------------------- Helpers -------------------------
+def first_present(df: pd.DataFrame, names, default=None) -> pd.Series:
+    """Return the first present column as a Series; else a filler Series."""
+    for n in names:
+        if n in df.columns:
+            return df[n]
+    if default is None:
+        return pd.Series([pd.NA] * len(df), index=df.index)
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def american_to_decimal(o):
+    try:
+        o = float(o)
+    except Exception:
+        return math.nan
+    if o > 0:
+        return 1.0 + (o / 100.0)
+    if o < 0:
+        return 1.0 + (100.0 / abs(o))
+    return math.nan
+
+
+def parlay_ev_per_dollar(p_list, dec_list):
+    if not p_list or not dec_list:
+        return math.nan
+    p_all, dec_prod = 1.0, 1.0
+    for p, d in zip(p_list, dec_list):
+        if not (0.0 <= p <= 1.0) or not (d > 1.0):
+            return math.nan
+        p_all *= float(p)
+        dec_prod *= float(d)
+    return p_all * (dec_prod - 1.0) - (1.0 - p_all)
+
+
+# ------------------------- UI -------------------------
+st.set_page_config(page_title="Ghost Parlay Calculator", page_icon="👻", layout="wide")
+st.title("Ghost Parlay Calculator")
+
+if st.button("Refresh data", type="primary"):
+    try:
+        clear_loader_cache()
+    except Exception:
+        pass
+    st.rerun()
+
+edges, df_path, root_path = autoload_edges(with_caption=True)
+
+# Enrich (if lib provides these)
+try:
+    edges = add_probs_and_ev(attach_teams(edges.copy()))
+except Exception:
+    pass
+
+if edges.empty:
+    st.stop()
+
+# ---- Robust defaults so pool isn't empty ----
+if "book" not in edges.columns:
+    edges["book"] = "ANY"
+else:
+    edges["book"] = edges["book"].fillna("ANY")
+
+# Build a fallback game_id if missing/blank
+if "game_id" not in edges.columns:
+    edges["game_id"] = pd.Series([pd.NA] * len(edges))
+
+is_blank_gid = edges["game_id"].isna() | edges["game_id"].astype(str).str.strip().eq("")
+if is_blank_gid.any():
+    raw_dt = first_present(edges, ["_DateISO", "_date", "Date", "commence_time"])
+    dt = pd.to_datetime(raw_dt, errors="coerce").dt.strftime("%Y-%m-%d")
+    home = first_present(edges, ["_home_team", "home_team"]).fillna("").map(lambda x: str(x))
+    away = first_present(edges, ["_away_team", "away_team"]).fillna("").map(lambda x: str(x))
+    edges.loc[is_blank_gid, "game_id"] = (
+        dt.fillna("").map(lambda x: x or "") + "::" + home + "@" + away
+    ).str.strip()
+
+# Ensure required columns exist
+for c in ("game_id", "market", "side", "book", "odds", "p_win"):
+    if c not in edges.columns:
+        edges[c] = np.nan
+
+# If model prob missing, backfill from odds
+if "p_win" not in edges.columns or edges["p_win"].isna().all():
+    def _amer_to_p(o):
+        try:
+            o = float(o)
+        except Exception:
+            return math.nan
+        return 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0) if o < 0 else math.nan
+    edges["p_win"] = pd.to_numeric(edges.get("odds"), errors="coerce").map(_amer_to_p)
+
+# ------------------------- Controls -------------------------
+st.sidebar.header("Build Controls")
+max_legs = st.sidebar.slider("Max legs (min 3)", 3, 10, 4, 1)
+min_p = st.sidebar.slider("Min leg win prob", 0.30, 0.80, 0.50, 0.01)
+min_abs_odds = st.sidebar.number_input("Min |odds|", 50, 10000, 100, 10)
+limit_combos = st.sidebar.number_input("Cap combos (0=no cap)", 0, 2_000_000, 5_000, 500)
+
+st.sidebar.divider(); st.sidebar.header("Ranking & Filters")
+show_top_n = st.sidebar.number_input("Show top N", 5, 250, 25, 5)
+
+# ------------------------- Build pool -------------------------
+pool = edges.dropna(subset=["side", "odds"]).copy()
+pool = pool[
+    (pd.to_numeric(pool["p_win"], errors="coerce").fillna(0) >= float(min_p))
+    & (pd.to_numeric(pool["odds"], errors="coerce").abs() >= float(min_abs_odds))
+]
+pool["dec"] = pd.to_numeric(pool["odds"], errors="coerce").map(american_to_decimal)
+pool = pool.sort_values("dec", ascending=False).dropna(subset=["dec"]).reset_index(drop=True)
+
+if pool.empty:
+    st.warning("No legs match current sliders. Lower Min leg win prob or Min |odds|.")
+    st.stop()
+
+# ------------------------- Search (beam) -------------------------
+def topN_parlays(pool_df, max_legs: int, cap: int, topN: int, per_game_limit: int = 1):
+    rows = pool_df[["game_id", "market", "side", "book", "odds", "p_win", "dec"]].dropna().to_dict("records")
+    rows.sort(key=lambda r: float(r["p_win"]) * (float(r["dec"]) - 1.0), reverse=True)
+
+    n = len(rows)
+    cap = 100_000 if cap <= 0 else cap
+    beam = min(max(1000, cap // 10), 10000)
+
+    best = []
+    idx = 0
+
+    partials = []
+    for i in range(min(n, beam)):
+        p_init = parlay_ev_per_dollar([rows[i]["p_win"]], [rows[i]["dec"]])
+        partials.append((p_init, i, [i], 1, {rows[i]["game_id"]: 1}))
+
+    while partials:
+        ev_curr, last_i, idxs, nlegs, used = partials.pop(0)
+        idx += 1
+        best.append((ev_curr, idx, {"legs": idxs, "n": nlegs}))
+        best = sorted(best, key=lambda t: (t[0], t[2]["n"]), reverse=True)[:topN]
+
+        if nlegs >= max_legs:
+            continue
+
+        # expand
+        for j in range(last_i + 1, min(n, last_i + 1 + beam // 4)):
+            g = rows[j]["game_id"]
+            if used.get(g, 0) >= per_game_limit:
+                continue
+            new_idxs = idxs + [j]
+            p_list = [float(rows[k]["p_win"]) for k in new_idxs]
+            d_list = [float(rows[k]["dec"]) for k in new_idxs]
+            ev = parlay_ev_per_dollar(p_list, d_list)
+            new_used = dict(used); new_used[g] = new_used.get(g, 0) + 1
+            partials.append((ev, j, new_idxs, nlegs + 1, new_used))
+
+        partials = sorted(partials, key=lambda t: t[0], reverse=True)[:beam]
+        if idx >= cap:
+            break
+
+    return [{"legs": [rows[k] for k in item[2]["legs"]], "ev": item[0]} for item in best]
+
+
+go = st.button("Generate Ghost Parlays", type="secondary")
+if not go:
+    st.info("Build some parlays first with **Generate Ghost Parlays**.")
+    st.stop()
+
+res = topN_parlays(pool, int(max_legs), int(limit_combos), int(show_top_n), per_game_limit=1)
+if not res:
+    st.warning("No parlays found at current filters.")
+    st.stop()
+
+def amer(od):
+    try:
+        return f"{int(float(od)):+d}"
+    except Exception:
+        return "?"
+
+rows_out = []
+for r in res:
+    legs = r["legs"]
+    decs = [american_to_decimal(l["odds"]) for l in legs]
+    probs = [float(l["p_win"]) for l in legs]
+    dec_prod = float(np.prod(decs))
+    p_all = float(np.prod(probs))
+    ev_d = p_all * (dec_prod - 1.0) - (1.0 - p_all)
+    title = " + ".join([f'{l["side"]} ({l.get("book","?")} {amer(l["odds"])})' for l in legs])
+    rows_out.append({
+        "n_legs": len(legs),
+        "EV/$1": round(ev_d, 4),
+        "Parlay Prob": round(p_all, 6),
+        "Parlay Dec": round(dec_prod, 4),
+        "Title": title
+    })
+
+out_df = pd.DataFrame(rows_out).sort_values(["EV/$1", "Parlay Prob"], ascending=[False, False]).head(int(show_top_n))
+
+st.subheader(f"Top {len(out_df)} Parlays")
+st.dataframe(out_df, use_container_width=True, hide_index=True, height=560)
+st.download_button(
+    "⬇️ Download Top Parlays (CSV)",
+    data=out_df.to_csv(index=False).encode("utf-8"),
+    file_name="ghost_parlays_top.csv",
+    mime="text/csv",
+)
+

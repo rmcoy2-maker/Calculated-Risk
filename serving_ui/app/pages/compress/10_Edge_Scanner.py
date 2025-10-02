@@ -1,0 +1,144 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+import numpy as np, pandas as pd, streamlit as st
+from lib.io_paths import autoload_edges, clear_loader_cache
+from lib.enrich import add_probs_and_ev, attach_teams
+df, df_path, root = autoload_edges(with_caption=True)
+df = add_probs_and_ev(attach_teams(df))
+st.set_page_config(page_title='Edge Scanner', page_icon='🧪', layout='wide')
+
+
+
+
+# === Nudge+Session (auto-injected) ===
+try:
+    from app.utils.nudge import begin_session, touch_session, session_duration_str, bump_usage, show_nudge  # type: ignore
+except Exception:
+    def begin_session(): pass
+    def touch_session(): pass
+    def session_duration_str(): return ""
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Initialize/refresh session and show live duration
+begin_session()
+touch_session()
+if hasattr(st, "sidebar"):
+    st.sidebar.caption(f"🕒 Session: {session_duration_str()}")
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Optional upsell banner after threshold interactions in last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge+Session (auto-injected) ===
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+st.title('Edge Scanner')
+if st.button('Refresh data', type='primary'):
+    clear_loader_cache()
+    st.rerun()
+edges, df_path, root_path = autoload_edges(with_caption=True)
+if edges.empty:
+    st.stop()
+
+def american_to_prob(o):
+    if pd.isna(o):
+        return np.nan
+    o = float(o)
+    return 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0) if o < 0 else np.nan
+
+def american_to_payout(o):
+    if pd.isna(o):
+        return np.nan
+    o = float(o)
+    return o / 100.0 if o > 0 else 100.0 / abs(o)
+if 'odds' not in edges.columns:
+    edges['odds'] = np.nan
+edges['p_win'] = edges['p_win'] if 'p_win' in edges.columns else np.nan
+if edges['p_win'].isna().all():
+    edges['p_win'] = edges['odds'].map(american_to_prob)
+edges['_payout_per_$1'] = edges['odds'].map(american_to_payout)
+edges['ev/$1'] = edges['p_win'] * edges['_payout_per_$1'] - (1 - edges['p_win'])
+left, right = st.columns(2)
+with left:
+    min_ev = st.slider('Min EV (per $1)', 0.0, 1.0, 0.0, 0.05)
+with right:
+    min_p = st.slider('Min p_win (implied)', 0.0, 1.0, 0.45, 0.01)
+flt = (edges['ev/$1'].fillna(-9) >= min_ev) & (edges['p_win'].fillna(0) >= min_p)
+view = edges.loc[flt].copy()
+cols = [c for c in ['game_id', 'market', 'side', 'book', 'odds', 'p_win', 'ev/$1'] if c in view.columns]
+st.dataframe(view[cols].reset_index(drop=True), height=520, width='stretch')
+st.caption(f'Rows after filters: {len(view):,}')
+st.download_button('Download filtered edges.csv', view[cols].to_csv(index=False).encode('utf-8'), file_name='edges_live_filtered.csv', mime='text/csv')
+
+
+
+
+
+

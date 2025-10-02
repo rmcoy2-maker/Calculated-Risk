@@ -1,0 +1,86 @@
+# serving_ui/app/pages/16_Model_Compare.py
+import numpy as np
+import pandas as pd
+import streamlit as st
+from serving_ui.app._layout import header
+from app.lib.betlog import read_log
+from app.lib.metrics import outcome_to_binary, brier_score, log_loss
+
+header("A/B Model Comparison")
+st.caption("Compare two probability columns on the SAME bets (e.g., `model_p` vs `model_p_b`). Uses settled results.")
+
+df = read_log()
+if df.empty:
+    st.warning("No bets in log.")
+    st.stop()
+df.columns = [c.strip().lower() for c in df.columns]
+
+# candidate probability columns
+prob_cols = [c for c in df.columns if c.startswith("model_p")]
+if len(prob_cols) < 2:
+    st.info(f"Need 2+ model probability columns (found: {prob_cols}). Add another column like `model_p_b` during scoring.")
+    st.stop()
+
+left, right = st.columns(2)
+with left:
+    a = st.selectbox("Model A column", prob_cols, index=0)
+with right:
+    b = st.selectbox("Model B column", prob_cols, index=1)
+
+# settled only
+mask_set = ~df["result"].astype(str).str.lower().isin(["","open"])
+d = df[mask_set].copy()
+if d.empty:
+    st.info("No settled rows.")
+    st.stop()
+
+# optional filters
+with st.expander("Filters"):
+    for c in ["sport","league","market","book","season","week"]:
+        if c in d.columns:
+            vals = sorted(v for v in d[c].dropna().unique().tolist())
+            pick = st.multiselect(c.capitalize(), vals, default=vals, key=f"ab_{c}")
+            if pick:
+                d = d[d[c].isin(pick)]
+
+if d.empty:
+    st.info("No rows after filters.")
+    st.stop()
+
+y = outcome_to_binary(d["result"])
+pa = pd.to_numeric(d[a], errors="coerce").clip(0,1)
+pb = pd.to_numeric(d[b], errors="coerce").clip(0,1)
+
+# scores
+metrics = []
+for name, p in [("A", pa), ("B", pb)]:
+    metrics.append({
+        "model": name,
+        "brier": brier_score(y, p),
+        "log_loss": log_loss(y, p)
+    })
+mt = pd.DataFrame(metrics).sort_values("log_loss")
+st.subheader("Scorecard")
+st.dataframe(mt, use_container_width=True, hide_index=True)
+
+best = mt.iloc[0]["model"]
+st.success(f"**Winner (lower LogLoss): Model {best}**")
+
+# where A vs B differs most
+st.subheader("Disagreement Explorer")
+d["pa"] = pa; d["pb"] = pb; d["abs_diff"] = (pa - pb).abs()
+d_view = d.sort_values("abs_diff", ascending=False)
+
+cols_show = [c for c in ["ts","result","sport","league","market","book","game_id","side","selection","odds"] if c in d.columns]
+st.dataframe(
+    d_view[cols_show + ["pa","pb","abs_diff"]].head(50),
+    use_container_width=True, hide_index=True
+)
+st.download_button("Download disagreements.csv",
+                   data=d_view[cols_show + ["pa","pb","abs_diff"]].to_csv(index=False).encode(),
+                   file_name="ab_disagreements.csv", mime="text/csv")
+
+
+
+
+

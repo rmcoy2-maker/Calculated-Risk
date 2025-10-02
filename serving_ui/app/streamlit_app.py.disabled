@@ -1,0 +1,12 @@
+﻿from __future__ import annotations
+import sys
+from pathlib import Path
+import streamlit as st
+
+ROOT = Path(__file__).resolve().parents[1]   # .../serving_ui/app
+REPO = ROOT.parents[1]                       # repo root
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+st.set_page_config(page_title="Edge Finder", layout="wide")
+st.switch_page("pages/00_Dashboard.py")

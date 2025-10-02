@@ -1,0 +1,23 @@
+import streamlit as st
+from serving_ui.app._layout import header
+
+header("API Stubs (Closing Lines & Results)")
+
+st.info("Placehnewers for future API integrations (closing lines, results).")
+
+st.code("""
+def fetch_closing_lines(api_key: str, league: str):
+    # TODO: call your provider here
+    # return DataFrame with columns: ref OR (game_id, market, side, selection), close_odds
+    ...
+
+def fetch_results(api_key: str, league: str):
+    # TODO: call your provider here
+    # return DataFrame with columns: ref OR (game_id, market, side, selection), result, payout (optional)
+    ...
+""", language="python")
+
+
+
+
+

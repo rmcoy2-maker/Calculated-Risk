@@ -1,0 +1,50 @@
+import argparse, json, joblib
+from pathlib import Path
+import numpy as np
+import pandas as pd
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--edges", required=True)
+    ap.add_argument("--model-dir", required=True)
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    model_dir = Path(args.model_dir)
+    edges_path = Path(args.edges)
+    out_path = Path(args.out)
+
+    # Load trained pipeline
+    model = joblib.load(model_dir / "parlay_model.joblib")
+
+    # Column lists (written by train_parlay.py)
+    num_cols, cat_cols = [], []
+    meta_path = model_dir / "meta.json"
+    if meta_path.exists():
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        num_cols = meta.get("num_cols", []) or []
+        cat_cols = meta.get("cat_cols", []) or []
+
+    # Load edges and ensure expected columns exist
+    df = pd.read_csv(edges_path)
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    for c in num_cols:
+        if c not in df.columns:
+            df[c] = np.nan
+    for c in cat_cols:
+        if c not in df.columns:
+            df[c] = ""
+
+    X = df[num_cols + cat_cols] if (num_cols or cat_cols) else df.copy()
+
+    # Predict probability (class 1 = win)
+    proba = model.predict_proba(X)[:, 1]
+    out_df = df.copy()
+    out_df["parlay_score"] = proba
+    out_df.to_csv(out_path, index=False)
+    print(f"Wrote {out_path} with {len(out_df)} rows")
+
+if __name__ == "__main__":
+    main()

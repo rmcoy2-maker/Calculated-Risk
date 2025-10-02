@@ -1,0 +1,4 @@
+import streamlit as st
+from serving_ui.app._layout import header
+header('Slate Viewer')
+st.info('Placehnewer page. Add your previous Slate Viewer logic here.')

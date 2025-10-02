@@ -1,0 +1,53 @@
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+from app.lib.exports import find_latest_export, read_latest_export, SEARCH_ROOTS
+
+st.set_page_config(page_title="All Picks Explorer", layout="wide")
+st.title("🔎 All Picks Explorer")
+
+with st.sidebar:
+    st.subheader("Filters")
+    min_size_bytes = st.number_input("Prefer files >= this size (bytes)", min_value=0, value=1024, step=512)
+    q = st.text_input("Filter (substring across all columns)", "")
+    recency_hours = st.number_input("Recency (hours)", min_value=0, max_value=168, value=0)
+
+latest = find_latest_export()
+if not latest:
+    st.info(f"No edges/picks CSVs found. Looked in: {[str(x) for x in SEARCH_ROOTS]}")
+    st.stop()
+
+df = read_latest_export()
+df.columns = [str(c).strip() for c in df.columns]
+
+aliases = {"prob":"p_win", "p":"p_win", "win_prob":"p_win", "price":"odds", "american":"odds"}
+for a,b in aliases.items():
+    if a in df.columns and b not in df.columns:
+        df[b] = df[a]
+
+for c in ["ts","game_id","market","side","book","line","odds","p_win","ev"]:
+    if c not in df.columns: df[c] = None
+
+df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+for c in ["odds","p_win","ev","line"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+if recency_hours and "ts" in df.columns:
+    cut = pd.Timestamp.utcnow() - pd.Timedelta(hours=int(recency_hours))
+    df = df[df["ts"].fillna(pd.Timestamp(0)) >= cut]
+
+if q:
+    mask = df.astype(str).apply(lambda s: s.str.contains(q, case=False, na=False)).any(axis=1)
+    df = df[mask]
+
+st.caption(f"Using: {latest}  •  rows: {len(df)}")
+cols = [c for c in ["ts","game_id","market","side","book","line","odds","p_win","ev"] if c in df.columns]
+st.dataframe(df[cols], use_container_width=True, height=520)
+
+with st.expander("⚙️ Diagnostics", expanded=False):
+    st.write("Search roots:", [str(x) for x in SEARCH_ROOTS])
+    st.write("Latest file:", str(latest))
+    try:
+        st.dataframe(pd.read_csv(latest, nrows=50), use_container_width=True)
+    except Exception as e:
+        st.error(f"Preview read error: {e}")

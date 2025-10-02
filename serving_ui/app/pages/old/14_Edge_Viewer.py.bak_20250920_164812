@@ -1,0 +1,192 @@
+﻿# === sys.path bootstrap (repo-aware) ===
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve()
+APP  = HERE.parents[1]   # ...\app
+SU   = HERE.parents[2]   # ...\serving_ui
+REPO = HERE.parents[3]   # ...\edge-finder
+for p in {str(REPO), str(SU)}:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+# === end bootstrap ===
+
+from app.bootstrap import bootstrap_paths; bootstrap_paths()
+
+# --- compat logger shim (accepts context kwarg even if logger doesn't) ---
+try:
+    from app.utils.logger import log_error as _log_error
+    def log_error(*args, **kwargs):
+        try:
+            return _log_error(*args, **kwargs)
+        except TypeError:
+            return _log_error(args[0])
+except Exception:
+    def log_error(e, **kwargs):
+        print(f"[Edge Viewer] {kwargs.get('context','')}: {e}")
+# --- end shim ---
+
+import streamlit as st
+import pandas as pd
+
+# ---- helpers (replaces missing app.components.ui) ----
+EXPORTS_CANDIDATES = [REPO / "exports", SU / "exports", APP / "exports"]
+
+# pick newest edges.csv from any candidate folder
+def find_file(name: str):
+    picks = []
+    for d in EXPORTS_CANDIDATES:
+        p = d / name
+        if p.exists() and p.stat().st_size > 0:
+            picks.append(p)
+    return max(picks, key=lambda x: x.stat().st_mtime) if picks else None
+p_edges = find_file("edges.csv")
+if not p_edges:
+    st.info("No `edges.csv` found. Drop it under `exports/` and refresh.")
+    st.stop()
+from datetime import datetime
+try:
+    if p_edges:
+        _p = Path(p_edges)
+        if _p.exists():
+            st.caption(f"Using: {_p} (mtime: {datetime.fromtimestamp(_p.stat().st_mtime)})")
+        else:
+            st.caption(f"Using: {_p} (does not exist)")
+    else:
+        st.caption("Using: (no edges.csv found)")
+except Exception as _e:
+    st.caption(f"Using: (error reading mtime: {_e})") and len(pick) == 2:
+        start, end = pick
+    else:
+        start = end = pick
+    mask = (ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+    return df[mask]
+
+# optional tracking (safe no-ops if missing)
+try:
+    from app.utils.tracking import log_event, log_suggestions
+except Exception:
+    def log_event(*a, **k): pass
+    def log_suggestions(*a, **k): pass
+
+# -------------------- Page --------------------
+st.set_page_config(page_title="📊 Edge Viewer", layout="wide")
+st.title("📊 Edge Viewer")
+
+try:
+    # Locate edges.csv
+    p_edges = find_file("edges.csv")
+    if not p_edges:
+        st.info(f"No `edges.csv` found. Looked in: {[str(p) for p in EXPORTS_CANDIDATES]}")
+        st.stop()
+
+    # Load & normalize
+    df = normalize_cols(pd.read_csv(p_edges))
+
+    # Session-state namespace tied to the file's mtime (prevents stale selections)
+    ns = f"edge_viewer::{p_edges.stat().st_mtime_ns}"
+    def _key(s): return f"{ns}:{s}"
+
+    # Normalize common numeric/date fields
+    if "odds" in df.columns: df["odds"] = pd.to_numeric(df["odds"], errors="coerce")
+    for c in ["edge","ev","p_win","line","stake"]:
+        if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    ts_col = next((c for c in ["event_time","ts","time","timestamp","kickoff","start_time"] if c in df.columns), None)
+    df["event_time"] = pd.to_datetime(df[ts_col], errors="coerce") if ts_col else pd.NaT
+
+    # --- tolerant column lookup & inference ---
+    def pick_col(frame, candidates):
+        for c in candidates:
+            if c in frame.columns: return c
+        return None
+
+    sport_col  = pick_col(df, ["sport","sports","sport_name","league_sport","leagueGroup","competition_sport"])
+    league_col = pick_col(df, ["league","league_name","competition","org","tournament","leagueGroupName"])
+    market_col = pick_col(df, ["market","market_name","bet_market"])
+
+    # Infer sport tokens if missing (NFL/NBA/… from ref/game_id text)
+    def infer_tokens(series):
+        import re
+        vals = set()
+        for s in series.dropna().astype(str).head(500):
+            m = re.search(r'\b(NFL|NBA|MLB|NHL|NCAAF|NCAAB|MLS|EPL|UFC|WNBA)\b', s.upper())
+            if m: vals.add(m.group(1))
+        return sorted(vals)
+
+    if sport_col is None:
+        base = next((c for c in ("sport_hint","ref","game_id","market") if c in df.columns), None)
+        sport_opts = infer_tokens(df[base]) if base is not None else []
+    else:
+        sport_opts = sorted(df[sport_col].dropna().astype(str).unique())
+
+    league_opts = sorted(df[league_col].dropna().astype(str).unique()) if league_col else []
+    market_opts = sorted(df[market_col].dropna().astype(str).unique()) if market_col else []
+
+    # ---- Filters UI ----
+    with st.expander("Filters", expanded=True):
+        c0, c1, c2, c3, c4 = st.columns([0.8,1,1,1,1])
+        if c0.button("Reset filters", key=_key("reset")):
+            for k in list(st.session_state.keys()):
+                if isinstance(k, str) and k.startswith(ns):
+                    del st.session_state[k]
+            st.rerun()
+
+        pick_sport  = c1.multiselect("Sport",  sport_opts,  default=sport_opts, key=_key("sport"))
+        pick_league = c2.multiselect("League", league_opts, default=league_opts, key=_key("league"))
+        pick_market = c3.multiselect("Market", market_opts, default=market_opts, key=_key("market"))
+        min_edge    = c4.slider("Min edge (%)", -50.0, 50.0, 0.0, 0.5, key=_key("min_edge"))
+        pos_only    = c4.checkbox("Positive EV only", value=True, key=_key("pos_only"))
+
+    # ----- APPLY FILTERS -----
+    f = df.copy()
+    if sport_col and pick_sport:   f = f[f[sport_col].astype(str).isin(pick_sport)]
+    if league_col and pick_league: f = f[f[league_col].astype(str).isin(pick_league)]
+    if market_col and pick_market: f = f[f[market_col].astype(str).isin(pick_market)]
+
+    # date range
+    f = date_range_filter(f, "event_time", label="Event time")
+
+    # numeric filters
+    if "edge" in f.columns:
+        f = f[f["edge"].fillna(-1e9) >= float(min_edge)]
+    if pos_only and "ev" in f.columns:
+        f = f[f["ev"].fillna(-1e9) > 0]
+
+    # Display
+    st.caption(f"Rows: total {len(df):,} → after filters {len(f):,}")
+    disp_cols = [c for c in ["event_time","sport","league","game_id","market","ref","side","line","odds","p_win","edge","ev","book"] if c in f.columns]
+    table = f[disp_cols] if disp_cols else f
+
+    st.dataframe(table, use_container_width=True)
+    st.download_button(
+        "Download filtered CSV",
+        data=table.to_csv(index=False).encode("utf-8"),
+        file_name="edges_filtered.csv",
+        mime="text/csv",
+    )
+
+    # optional logging
+    try:
+        log_event("edge_viewer_opened", rows=len(table))
+        examples = (table.head(3)["ref"].astype(str).tolist()
+                    if "ref" in table.columns else table.head(3).astype(str).agg(" | ".join, axis=1).tolist())
+        log_suggestions("edge_viewer", examples, context="top3 after filters")
+    except Exception:
+        pass
+
+except Exception as e:
+    log_error(e, context=__file__)
+    st.error(f"Page error: {e}")
+
+# ---- Diagnostics ----
+with st.expander("⚙️ Diagnostics", expanded=False):
+    st.write("LOOKUP DIRS:", [str(p) for p in EXPORTS_CANDIDATES])
+    st.write("Found edges at:", str(p_edges) if 'p_edges' in locals() and p_edges else None)
+    try:
+        st.write("Header preview:")
+        st.write(pd.read_csv(p_edges, nrows=0).columns.tolist() if p_edges else None)
+    except Exception as _e:
+        st.write(f"Preview error: {_e}")
+
+

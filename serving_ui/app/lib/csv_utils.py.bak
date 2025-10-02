@@ -1,0 +1,30 @@
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, timezone
+
+EXPORTS = Path(__file__).resolve().parents[3] / "exports"
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+def utc_ts() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def safe_read_csv(p: Path) -> pd.DataFrame:
+    try:
+        return pd.read_csv(p) if p.exists() and p.stat().st_size > 0 else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+def ensure_csv(path: Path, header: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(header, encoding="utf-8")
+
+def append_dict_row(path: Path, row: dict):
+    df = safe_read_csv(path)
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df.to_csv(path, index=False)
+
+
+
+
+

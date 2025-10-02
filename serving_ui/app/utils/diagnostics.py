@@ -1,0 +1,10 @@
+from __future__ import annotations
+from typing import Optional, Dict, Any
+import os, platform, streamlit as st
+
+def mount_in_sidebar(page_name: Optional[str]=None) -> Dict[str, Any]:
+    title = f'Diagnostics — {page_name}' if page_name else 'Diagnostics'
+    with st.sidebar.expander(title, expanded=False):
+        st.write({'python': platform.python_version(), 'cwd': os.getcwd()})
+        st.write({'env': {k: v for k, v in os.environ.items() if k.startswith(('EDGE_', 'ODDS_', 'STREAMLIT_'))}})
+    return {'page': page_name, 'python': platform.python_version(), 'cwd': os.getcwd()}

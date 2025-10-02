@@ -1,0 +1,4 @@
+﻿import streamlit as st, pandas as pd
+st.set_page_config(page_title="Backtest", page_icon="🧪", layout="wide")
+st.title("Backtest (stub)")
+st.caption("Load multi-season lines/outcomes and show summary metrics.")

@@ -1,0 +1,197 @@
+﻿# --- auto-added: newest-first patch ---
+from __future__ import annotations
+try:
+    # Preferred absolute import (when 'app' is a proper package)
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        # Fallback if pages are executed such that relative path works
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+        # Final no-op guard
+        def __nfp_apply(_): 
+            return
+import streamlit as st  # ensure alias available
+__nfp_apply(st)
+# --- end auto-added ---
+# --- path bootstrap: allow `import app.*` from any page ---
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# --- imports (with safe logger fallback) ---
+import streamlit as st
+import pandas as pd
+import subprocess
+try:
+    from app.utils.logger import log_error
+except Exception:  # fallback so page never hard-crashes
+    def log_error(e, context=""):  # type: ignore
+        pass
+
+# --- constants/paths ---
+ROOT = _REPO_ROOT
+EXPORTS = ROOT / "exports"
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+EDGES_CSV = EXPORTS / "edges.csv"
+ODDS_CSV  = ROOT / "db" / "odds_books.csv"
+SCAN_PY   = ROOT / "serving" / "scan_edges.py"
+
+# --- helpers ---
+def american_to_prob(odds):
+    try:
+        o = float(str(odds).replace("+", ""))
+    except Exception:
+        return None
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    if o < 0:
+        return abs(o) / (abs(o) + 100.0)
+    return None
+
+def ev_per_dollar(p_win, odds):
+    """EV units per $1 stake given p_win and American odds."""
+    try:
+        o = int(odds)
+        if o >= 100:
+            payoff = o / 100.0         # e.g. +150 -> +1.5
+        elif o <= -100:
+            payoff = 100.0 / abs(o)    # e.g. -120 -> +0.8333
+        else:
+            return None
+        return float(p_win) * payoff - (1.0 - float(p_win))
+    except Exception:
+        return None
+
+def ensure_ev(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "p_win" not in out.columns:
+        out["p_win"] = out["odds"].map(american_to_prob) if "odds" in out.columns else None
+    if "EV" not in out.columns:
+        out["EV"] = out.apply(
+            lambda r: ev_per_dollar(r["p_win"], r["odds"])
+            if pd.notna(r.get("p_win")) and pd.notna(r.get("odds")) else None,
+            axis=1
+        )
+    return out
+
+# --- UI ---
+st.set_page_config(page_title="Edge Scanner", layout="wide")
+st.title("Edge Scanner")
+
+# Action row
+colA, colB, colC = st.columns([1,1,2])
+with colA:
+    if st.button("Write sample edges.csv"):
+        sample = """game_id,market,side,book,odds,p_win
+2025-09-17-NE@NYJ,Moneyline,NE,DK,-120,0.545
+2025-09-17-GB@CHI,ML,GB,FD,+135,0.43
+2025-09-17-KC@BUF,Moneyline,KC,MGM,-110,0.525
+2025-09-17-DAL@PHI,ML,PHI,PN,+120,0.48
+"""
+        EDGES_CSV.write_text(sample, encoding="utf-8")
+        st.success(f"Wrote {EDGES_CSV}")
+        st.experimental_rerun()
+
+with colB:
+    if st.button("Scan now"):
+        if not SCAN_PY.exists():
+            st.error(f"Scanner not found: {SCAN_PY}")
+        else:
+            try:
+                res = subprocess.run(
+                    [str(sys.executable), str(SCAN_PY)],
+                    text=True, capture_output=True, check=True, cwd=str(ROOT)
+                )
+                st.success("Scan complete.")
+                if res.stdout: st.code(res.stdout[:4000])
+                if res.stderr: st.error(res.stderr[:4000])
+            except subprocess.CalledProcessError as e:
+                st.error("Scan failed. See output below.")
+                st.code((e.stdout or "") + "\n" + (e.stderr or ""))
+            st.experimental_rerun()
+
+with colC:
+    st.caption(f"Files: edges={EDGES_CSV}  |  odds snapshot={ODDS_CSV}")
+
+# Optional raw odds preview (if you keep snapshots here)
+if ODDS_CSV.exists() and ODDS_CSV.stat().st_size > 0:
+    with st.expander("Preview latest raw odds snapshot"):
+        try:
+            small = pd.read_csv(ODDS_CSV).tail(200)
+            st.dataframe(small, use_container_width=True)
+        except Exception as e:
+            log_error(e, context=__file__)
+            st.error(f"Could not read odds snapshot: {e}")
+
+st.divider()
+
+# Main edges table
+try:
+    if not EDGES_CSV.exists() or EDGES_CSV.stat().st_size <= 5:
+        st.info("Run a scan or write sample edges to generate exports/edges.csv.")
+    else:
+        df = pd.read_csv(EDGES_CSV)
+        if df.empty:
+            st.warning("edges.csv is header-only.")
+        else:
+            df = ensure_ev(df)
+
+            st.subheader("Ranked value (by EV)")
+            c1, c2, c3 = st.columns(3)
+            min_ev = c1.number_input("Min EV ($ per $1)", -1.0, 5.0, 0.02, 0.01)
+            min_p  = c2.slider("Min p_win (model or implied)", 0.0, 1.0, 0.55, 0.01)
+            book   = c3.text_input("Filter by book (optional)", "")
+
+            view = df.copy()
+            if book.strip() and "book" in view.columns:
+                view = view[view["book"].astype(str).str.contains(book.strip(), case=False, na=False)]
+
+            # guard against missing columns
+            if "EV" not in view.columns:
+                view["EV"] = None
+            if "p_win" not in view.columns:
+                view["p_win"] = None
+
+            view = view[
+                (view["EV"].fillna(-999) >= float(min_ev)) &
+                (view["p_win"].fillna(0.0) >= float(min_p))
+            ]
+
+            if view.empty:
+                st.warning("No rows meet the filters. Try lowering Min EV or Min p_win.")
+            else:
+                st.dataframe(view.sort_values("EV", ascending=False), use_container_width=True)
+                st.download_button(
+                    "Download filtered edges.csv",
+                    data=view.to_csv(index=False).encode("utf-8"),
+                    file_name="edges_filtered.csv",
+                    mime="text/csv"
+                )
+
+    # Diagnostics
+    with st.expander("Diagnostics"):
+        def _size(p: Path): 
+            try: return p.stat().st_size
+            except Exception: return 0
+        st.write("ROOT:", ROOT)
+        st.write("EDGES_CSV:", EDGES_CSV, "exists?", EDGES_CSV.exists(), "size:", _size(EDGES_CSV))
+        st.write("ODDS_CSV:", ODDS_CSV, "exists?", ODDS_CSV.exists(), "size:", _size(ODDS_CSV))
+        if EDGES_CSV.exists():
+            try:
+                head = pd.read_csv(EDGES_CSV, nrows=5)
+                st.caption("edges.csv (first rows)")
+                st.dataframe(head, use_container_width=True)
+                st.text(f"Columns: {list(head.columns)}")
+            except Exception as e:
+                st.error(f"Preview read error: {e}")
+
+except Exception as e:
+    log_error(e, context=__file__)
+    st.error(f"Page error: {e}")
+
+
+

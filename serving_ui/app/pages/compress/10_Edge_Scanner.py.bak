@@ -1,0 +1,36 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+import numpy as np, pandas as pd, streamlit as st
+from lib.io_paths import autoload_edges, clear_loader_cache
+from lib.enrich import add_probs_and_ev, attach_teams
+
+df, df_path, root = autoload_edges(with_caption=True)
+df = add_probs_and_ev(attach_teams(df))
+
+st.set_page_config(page_title="Edge Scanner", page_icon="🧪", layout="wide")
+st.title("Edge Scanner")
+if st.button("Refresh data", type="primary"):
+    clear_loader_cache(); st.rerun()
+edges, df_path, root_path = autoload_edges(with_caption=True)
+if edges.empty: st.stop()
+def american_to_prob(o):
+    if pd.isna(o): return np.nan
+    o = float(o); return 100.0/(o+100.0) if o>0 else abs(o)/(abs(o)+100.0) if o<0 else np.nan
+def american_to_payout(o):
+    if pd.isna(o): return np.nan
+    o = float(o); return (o / 100.0) if o > 0 else (100.0 / abs(o))
+if "odds" not in edges.columns: edges["odds"] = np.nan
+edges["p_win"] = edges["p_win"] if "p_win" in edges.columns else np.nan
+if edges["p_win"].isna().all(): edges["p_win"] = edges["odds"].map(american_to_prob)
+edges["_payout_per_$1"] = edges["odds"].map(american_to_payout)
+edges["ev/$1"] = edges["p_win"] * edges["_payout_per_$1"] - (1 - edges["p_win"])
+left, right = st.columns(2)
+with left:  min_ev = st.slider("Min EV (per $1)", 0.0, 1.0, 0.0, 0.05)
+with right: min_p  = st.slider("Min p_win (implied)", 0.0, 1.0, 0.45, 0.01)
+flt = (edges["ev/$1"].fillna(-9) >= min_ev) & (edges["p_win"].fillna(0) >= min_p)
+view = edges.loc[flt].copy()
+cols = [c for c in ["game_id","market","side","book","odds","p_win","ev/$1"] if c in view.columns]
+st.dataframe(view[cols].reset_index(drop=True), use_container_width=True, height=520)
+st.caption(f"Rows after filters: {len(view):,}")
+st.download_button("Download filtered edges.csv", view[cols].to_csv(index=False).encode("utf-8"), file_name="edges_live_filtered.csv", mime="text/csv")
+

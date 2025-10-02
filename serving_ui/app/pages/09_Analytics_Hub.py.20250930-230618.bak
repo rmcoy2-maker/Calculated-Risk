@@ -1,0 +1,344 @@
+# -*- coding: utf-8 -*-
+# 09_Analytics_Hub.py — Team & Market analytics with tier gating
+
+from __future__ import annotations
+
+from pathlib import Path
+from functools import lru_cache
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ------------------ Page Config ------------------
+st.set_page_config(page_title="Analytics Hub — Team & Market", layout="wide")
+
+# ------------------ Simple Entitlements (replace with your auth later) ------------------
+TIERS = ("basic", "advanced", "premium")
+
+FEATURES_BY_TIER = {
+    "basic": {
+        "team":  {"ppg_basic", "pa_basic"},
+        "market":{"matchup_ctx_basic"},
+        "shared":{"parlay_builder_lite"}  # placeholder if you want to gate UI controls elsewhere
+    },
+    "advanced": {
+        "team":  {"ppg_basic","pa_basic","mov_basic","ats_overall","totals_over_under"},
+        "market":{"matchup_ctx_basic","market_ats_simple"},
+        "shared":{"download_table"}
+    },
+    "premium": {
+        "team":  {"ppg_basic","pa_basic","mov_basic",
+                  "ppg_volatility","pa_volatility","mov_volatility",
+                  "mol_basic","ats_overall","ats_covered_win_loss",
+                  "splits_home_away","splits_fav_dog","csv_export"},
+        "market":{"matchup_ctx_basic","market_ats_simple","market_similar_spots",
+                  "distributions","alerts"},
+        "shared":{"api_access","download_table","export_csv"}
+    },
+}
+
+def has_feature(tier: str, scope: str, feat: str) -> bool:
+    allowed = FEATURES_BY_TIER.get(tier, {})
+    return feat in allowed.get(scope, set()) or feat in allowed.get("shared", set())
+
+# ------------------ Data Loading ------------------
+def _exports_dir() -> Path:
+    # mirrors your other pages: prefer EDGE_EXPORTS_DIR; else repo /exports
+    env = (Path(st.secrets.get("EDGE_EXPORTS_DIR","")) if "EDGE_EXPORTS_DIR" in st.secrets else None)
+    if env and str(env).strip():
+        env.mkdir(parents=True, exist_ok=True)
+        return env
+    here = Path(__file__).resolve()
+    for up in [here.parent] + list(here.parents):
+        if up.name.lower() == "edge-finder":
+            p = up / "exports"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    return here.parent / "exports"
+
+@st.cache_data(show_spinner=False)
+def load_data():
+    root = _exports_dir()
+    # Adjust filenames if yours differ
+    edges = pd.read_csv(root / "edges_graded_full_normalized_std.csv", low_memory=False)
+    scores = pd.read_csv(root / "scores_1966-2025.csv", low_memory=False)
+    odds = None
+    try:
+        odds = pd.read_csv(root / "odds_lines_all.csv", low_memory=False)
+    except Exception:
+        pass
+    return edges, scores, odds
+
+edges, scores, odds = load_data()
+
+# ------------------ Helpers: Normalization & Keys ------------------
+def normalize_scores(sc: pd.DataFrame) -> pd.DataFrame:
+    sc = sc.copy()
+
+    # Expect columns like: date (YYYY-MM-DD), home, away, home_score, away_score, spread_close?, total_close? etc.
+    # Create convenience columns
+    if "date" not in sc.columns and "_date_iso" in sc.columns:
+        sc["date"] = sc["_date_iso"].astype(str).str[:10]
+    elif "date" in sc.columns:
+        sc["date"] = sc["date"].astype(str).str[:10]
+
+    # winner, margin (+ = home wins by margin)
+    if {"home_score","away_score"}.issubset(sc.columns):
+        sc["_margin_home"] = sc["home_score"] - sc["away_score"]
+        sc["_total_points"] = sc[["home_score","away_score"]].sum(axis=1)
+
+    # Derive spread result for home side if closing spread is available (home negative if favored)
+    # Convention: spread_home < 0 means home favored by abs(spread_home)
+    if "spread_home" in sc.columns:
+        sc["_home_spread_result"] = sc["_margin_home"] + sc["spread_home"]
+        sc["_home_cover"] = np.where(sc["_home_spread_result"] > 0, 1,
+                              np.where(sc["_home_spread_result"] < 0, 0, 0.5))  # push = 0.5 or drop later
+
+    # Totals close vs actual
+    if "total_close" in sc.columns:
+        sc["_total_over"] = np.where(sc["_total_points"] > sc["total_close"], 1,
+                              np.where(sc["_total_points"] < sc["total_close"], 0, 0.5))
+    return sc
+
+scores = normalize_scores(scores)
+
+# ------------------ Computation Blocks ------------------
+def team_profile(sc: pd.DataFrame, team: str, seasons: list[int] | None = None) -> dict[str, pd.DataFrame|pd.Series]:
+    """Compute the premium analytics for a single team."""
+    df = sc.copy()
+    # filter where team appears either home or away
+    mask = (df["home"] == team) | (df["away"] == team)
+    df = df.loc[mask].copy()
+
+    # Season column (YYYY)
+    if "date" in df.columns:
+        df["season"] = df["date"].str[:4].astype(int)
+    if seasons:
+        df = df[df["season"].isin(seasons)]
+
+    # Points for/against from team POV
+    # For rows where team is home:
+    df["_is_home"] = (df["home"] == team).astype(int)
+    df["_pf"] = np.where(df["_is_home"] == 1, df["home_score"], df["away_score"])
+    df["_pa"] = np.where(df["_is_home"] == 1, df["away_score"], df["home_score"])
+    df["_mov"] = df["_pf"] - df["_pa"]
+    df["_mol"] = np.where(df["_mov"] < 0, -df["_mov"], 0)  # margin of *loss* only
+
+    # ATS from team POV (need spread relative to team)
+    # If we only have home spreads, transform for away rows:
+    if "spread_home" in df.columns:
+        # team spread = spread for the side of the team (+ means team is underdog getting points)
+        df["_team_spread"] = np.where(df["_is_home"] == 1, df["spread_home"], -df["spread_home"])
+        # covered if (team margin + team spread) > 0 ; push == 0
+        team_result = df["_mov"] + df["_team_spread"]
+        df["_ats_cover"] = np.where(team_result > 0, 1, np.where(team_result < 0, 0, 0.5))
+
+    # Totals (over/under) already computed as _total_over (game-level). That’s fine for team rollups.
+
+    # Aggregates
+    out = {}
+
+    # Core means & stds
+    agg = pd.Series(dtype=float)
+    agg.loc["games"] = len(df)
+    for col, name_mean, name_std in [
+        ("_pf", "ppg_mean", "ppg_std"),
+        ("_pa", "papg_mean","papg_std"),
+        ("_mov","mov_mean","mov_std"),
+        ("_mol","mol_mean","mol_std"),
+    ]:
+        if col in df.columns and len(df) > 0:
+            agg.loc[name_mean] = df[col].mean()
+            agg.loc[name_std]  = df[col].std(ddof=1)
+
+    # ATS rollups
+    if "_ats_cover" in df.columns and len(df) > 0:
+        # Drop pushes for % computations (or keep as 0.5 if you prefer)
+        no_push = df[df["_ats_cover"] != 0.5]
+        agg.loc["ats_games_no_push"] = len(no_push)
+        if len(no_push):
+            agg.loc["ats_cover_pct"] = no_push["_ats_cover"].mean()
+
+            # covered win / covered loss
+            # Team won?
+            team_won = (df["_mov"] > 0)
+            covered  = (df["_ats_cover"] == 1)
+            lost     = (df["_mov"] < 0)
+            covered_win  = (covered & team_won).sum()
+            covered_loss = (covered & lost).sum()
+            agg.loc["covered_win_pct"]  = covered_win / len(no_push)
+            agg.loc["covered_loss_pct"] = covered_loss / len(no_push)
+
+    # Totals
+    if "_total_over" in df.columns and len(df) > 0:
+        no_push_tot = df[df["_total_over"] != 0.5]
+        agg.loc["totals_games_no_push"] = len(no_push_tot)
+        if len(no_push_tot):
+            agg.loc["over_pct"] = (no_push_tot["_total_over"] == 1).mean()
+            agg.loc["under_pct"] = (no_push_tot["_total_over"] == 0).mean()
+
+    out["summary"] = agg
+
+    # Optional splits (premium placeholders)
+    # Home/Away
+    split_tables = {}
+    for label, filt in [
+        ("Home", df["_is_home"] == 1),
+        ("Away", df["_is_home"] == 0),
+    ]:
+        part = df.loc[filt]
+        if len(part) == 0: 
+            continue
+        row = {
+            "games": len(part),
+            "ppg_mean": part["_pf"].mean(),
+            "ppg_std": part["_pf"].std(ddof=1),
+            "papg_mean": part["_pa"].mean(),
+            "papg_std": part["_pa"].std(ddof=1),
+            "mov_mean": part["_mov"].mean(),
+            "mov_std": part["_mov"].std(ddof=1),
+        }
+        if "_ats_cover" in part.columns:
+            pnp = part[part["_ats_cover"] != 0.5]
+            row["ats_games_no_push"] = len(pnp)
+            row["ats_cover_pct"] = pnp["_ats_cover"].mean() if len(pnp) else np.nan
+        split_tables[label] = row
+
+    if split_tables:
+        out["splits_home_away"] = pd.DataFrame(split_tables).T
+
+    return out
+
+def market_context(sc: pd.DataFrame, home: str, away: str, season: int | None, line: float | None, market: str = "spread") -> dict:
+    """Game/matchup-centric metrics. Minimal viable for wiring; expand with similar-spot logic."""
+    df = sc.copy()
+    if "date" in df.columns:
+        df["season"] = df["date"].str[:4].astype(int)
+
+    game = df[(df["home"] == home) & (df["away"] == away)]
+    out = {"game_rows": len(game)}
+
+    # Simple historical context for this matchup (team vs team, any year)
+    h2h = df[((df["home"] == home) & (df["away"] == away)) | ((df["home"] == away) & (df["away"] == home))]
+    out["h2h_games"] = len(h2h)
+
+    # Basic “similar spots” (premium placeholder): if market == spread and spread_home exists
+    if market == "spread" and "spread_home" in df.columns and line is not None:
+        # Similar = same home team, spread within +/- 1.0 of given line
+        cand = df[df["home"] == home]
+        cand = cand[np.isfinite(cand["spread_home"])]
+        similar = cand[ cand["spread_home"].between(line - 1.0, line + 1.0) ]
+        out["similar_spot_count"] = len(similar)
+        if len(similar) and "_home_spread_result" in cand.columns:
+            no_push = similar[ similar["_home_spread_result"] != 0 ]
+            out["similar_cover_pct_home_side"] = (no_push["_home_spread_result"] > 0).mean() if len(no_push) else np.nan
+
+    # Totals context could be parallel: band around total_close, distribution plot, etc.
+    return out
+
+# ------------------ UI ------------------
+st.title("📊 Analytics Hub")
+st.caption("Dual-mode analytics with tiered feature gating (Basic / Advanced / Premium)")
+
+# TEMP entitlement control (replace with your login/role)
+tier = st.sidebar.selectbox("Tier (temporary control)", TIERS, index=1)
+
+mode = st.radio("Mode", ["Team Profile", "Market / Matchup"], horizontal=True)
+
+# -------- Team Profile Mode --------
+if mode == "Team Profile":
+    teams = sorted(set(scores["home"]).union(set(scores["away"])))
+    col_sel, col_season = st.columns([2,1])
+    team = col_sel.selectbox("Team", teams, index=0)
+    all_seasons = sorted(scores["date"].str[:4].astype(int).unique().tolist())
+    sel_seasons = col_season.multiselect("Seasons", all_seasons, default=all_seasons[-3:])
+
+    res = team_profile(scores, team, sel_seasons)
+
+    st.subheader(f"Summary — {team}")
+    summary = res.get("summary", pd.Series(dtype=float))
+
+    # BASIC / ADVANCED blocks
+    basic_cols = []
+    if has_feature(tier, "team", "ppg_basic"): basic_cols += ["ppg_mean"]
+    if has_feature(tier, "team", "pa_basic"):  basic_cols += ["papg_mean"]
+    if has_feature(tier, "team", "mov_basic"): basic_cols += ["mov_mean"]
+
+    adv_cols = []
+    if has_feature(tier, "team", "ats_overall"): adv_cols += ["ats_cover_pct"]
+    if has_feature(tier, "team", "totals_over_under"): adv_cols += ["over_pct","under_pct"]
+
+    prem_cols = []
+    if has_feature(tier, "team", "ppg_volatility"): prem_cols += ["ppg_std"]
+    if has_feature(tier, "team", "pa_volatility"):  prem_cols += ["papg_std"]
+    if has_feature(tier, "team", "mov_volatility"): prem_cols += ["mov_std"]
+    if has_feature(tier, "team", "mol_basic"):      prem_cols += ["mol_mean","mol_std"]
+    if has_feature(tier, "team", "ats_covered_win_loss"): prem_cols += ["covered_win_pct","covered_loss_pct"]
+
+    cols_to_show = ["games"] + basic_cols + adv_cols + prem_cols
+    show = summary[summary.index.isin(cols_to_show)].rename({
+        "games":"Games",
+        "ppg_mean":"PPG (mean)",
+        "ppg_std":"PPG (std)",
+        "papg_mean":"PA (mean)",
+        "papg_std":"PA (std)",
+        "mov_mean":"MOV (mean)",
+        "mov_std":"MOV (std)",
+        "mol_mean":"MOL (mean)",
+        "mol_std":"MOL (std)",
+        "ats_cover_pct":"ATS Cover %",
+        "covered_win_pct":"Covered Win %",
+        "covered_loss_pct":"Covered Loss %",
+        "over_pct":"Over %",
+        "under_pct":"Under %",
+    })
+    st.dataframe(show.to_frame("Value"))
+
+    # Premium splits
+    if has_feature(tier, "team", "splits_home_away") and "splits_home_away" in res:
+        st.markdown("### Home / Away Splits (Premium)")
+        st.dataframe(res["splits_home_away"])
+
+    # CSV export
+    if has_feature(tier, "team", "csv_export"):
+        csv = show.to_csv(index=True).encode("utf-8")
+        st.download_button("⬇️ Download summary CSV", csv, file_name=f"{team}_summary.csv", mime="text/csv")
+
+# -------- Market / Matchup Mode --------
+else:
+    # Simple selectors; you can replace with your joined edges/scores table
+    homes = sorted(scores["home"].unique().tolist())
+    c1, c2 = st.columns(2)
+    home = c1.selectbox("Home", homes, index=0)
+    away = c2.selectbox("Away", sorted(scores[scores["home"]==home]["away"].unique().tolist()))
+
+    # Market selector
+    market = st.selectbox("Market", ["spread","total"], index=0)
+
+    # Optional line inputs: allow user to paste the current line they’re evaluating
+    line_val = None
+    if market == "spread":
+        line_val = st.number_input("Home spread (negative = home favorite)", value= -3.0, step=0.5)
+    elif market == "total":
+        line_val = st.number_input("Total (closing/target)", value= 45.5, step=0.5)
+
+    ctx = market_context(scores, home, away, season=None, line=line_val, market=market)
+
+    st.subheader("Matchup Context")
+    basic_ctx = {
+        "Rows (this exact H2H in data)": ctx.get("h2h_games", 0),
+    }
+    st.write(basic_ctx)
+
+    if has_feature(tier, "market", "market_ats_simple") and market == "spread":
+        st.markdown("#### Similar Spots (Premium if expanded)")
+        st.write({
+            "Similar-spot rows (±1.0 around line)": ctx.get("similar_spot_count"),
+            "Home side cover % in similar spots (no pushes)": ctx.get("similar_cover_pct_home_side"),
+        })
+
+    # Placeholders for premium charts/alerts (fill in later)
+    if has_feature(tier, "market", "distributions"):
+        st.info("Premium: distribution plots of margins/total results would render here.")
+    if has_feature(tier, "market", "alerts"):
+        st.info("Premium: line-move / arb / middle alert configuration would render here.")

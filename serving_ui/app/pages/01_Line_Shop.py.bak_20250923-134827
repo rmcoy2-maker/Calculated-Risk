@@ -1,0 +1,45 @@
+import os
+import pandas as pd
+import streamlit as st
+from pathlib import Path
+
+REPO = Path(r"C:\Projects\edge-finder")
+CSV  = REPO / "exports" / "lines_live.csv"
+
+st.set_page_config(page_title="Line Shop", page_icon="🧮", layout="wide")
+st.title("Line Shop (Live Odds)")
+
+colA, colB = st.columns([1,4])
+with colA:
+    if st.button("Refresh odds now", use_container_width=True):
+        st.session_state["_refresh_odds"] = True
+with colB:
+    st.caption("Data from The Odds API. Configure ODDS_API_KEY in .env.")
+
+if st.session_state.get("_refresh_odds"):
+    st.toast("Refreshing odds… run pull_lines_now.ps1 or schedule a task.", icon="⏱️")
+    st.session_state["_refresh_odds"] = False
+
+if not CSV.exists():
+    st.warning("No live odds file found yet. Run pull_lines_now.ps1 from repo root.")
+    st.stop()
+
+df = pd.read_csv(CSV)
+if df.empty:
+    st.info("No live odds rows yet. Try refreshing again later.")
+    st.stop()
+
+# Basic filters
+sport = "NFL"
+st.sidebar.header("Filters")
+game_search = st.sidebar.text_input("Team search (home/away contains)")
+
+view = df.copy()
+if game_search:
+    s = game_search.lower()
+    view = view[view["home"].str.lower().str.contains(s) | view["away"].str.lower().str.contains(s)]
+
+# Best price table (simple example for ML integration later)
+cols = ["commence_time","home","away","book","market","selection","price_american","point"]
+st.subheader("Live odds")
+st.dataframe(view[cols].sort_values(["commence_time","home","book","market"]).reset_index(drop=True), use_container_width=True)

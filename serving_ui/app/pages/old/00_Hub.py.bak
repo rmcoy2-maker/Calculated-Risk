@@ -1,0 +1,54 @@
+﻿# pages/00_Hub.py — quick links hub (works from inside pages/)
+from pathlib import Path
+import streamlit as st
+
+HERE = Path(__file__).resolve()
+APP_DIR = HERE.parents[1]
+PAGES_DIR = APP_DIR / "pages"
+
+CANDIDATE_LOGOS = [
+    APP_DIR / "assets" / "logo.png",
+    APP_DIR / "assets" / "calculated_risk_logo.png",
+]
+LOGO = next((p for p in CANDIDATE_LOGOS if p.exists()), None)
+
+st.set_page_config(
+    page_title="Calculated Risk • Hub",
+    page_icon=str(LOGO) if LOGO else "🏈",
+    layout="wide",
+)
+
+# hero
+col1, col2 = st.columns([1, 3])
+with col1:
+    if LOGO:
+        st.image(str(LOGO), width=200)
+with col2:
+    st.title("Calculated Risk")
+    st.markdown("**Edge Finder • Betting Analytics • Parlay Builder**")
+
+st.divider()
+
+def link(page_filename: str, label: str):
+    # when called from inside pages/, page targets must include "pages/"
+    st.page_link(f"pages/{page_filename}", label=label)
+
+# quick links (only render if files exist)
+def quick(page, label):
+    if (PAGES_DIR / page).exists():
+        link(page, label)
+    else:
+        st.caption(f"⛔ missing: pages/{page}")
+
+cols = st.columns(4)
+with cols[0]: quick("09_Parlay_Builder.py", "🎲 Parlay Builder")
+with cols[1]: quick("06_Bet_Log.py",        "📝 Bet Log")
+with cols[2]: quick("03_Backtest.py",       "🧪 Backtest")
+with cols[3]: quick("98_Diagnostics.py",    "🛠️ Diagnostics")
+
+st.divider()
+
+with st.expander("⚙️ Diagnostics"):
+    st.write("APP_DIR:", APP_DIR)
+    st.write("PAGES_DIR:", PAGES_DIR)
+    st.write("Has logo:", bool(LOGO))

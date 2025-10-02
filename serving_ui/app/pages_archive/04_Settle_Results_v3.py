@@ -1,0 +1,17 @@
+import streamlit as st, pandas as pd
+from serving_ui.app._layout import header
+from core_engine.utils.paths import EXPORTS_DIR
+header('Settle Results')
+out_p = EXPORTS_DIR / 'settled.csv'
+cur = pd.read_csv(out_p) if out_p.exists() else pd.DataFrame(columns=['game_id', 'result', 'notes', 'pnl'])
+with st.form('settle'):
+    game_id = st.text_input('game_id')
+    result = st.selectbox('result', ['win', 'loss', 'push'])
+    notes = st.text_input('notes', '')
+    if st.form_submit_button('Add'):
+        row = {'game_id': game_id.strip(), 'result': result, 'notes': notes, 'pnl': None}
+        cur = pd.concat([cur, pd.DataFrame([row])], ignore_index=True)
+        cur.to_csv(out_p, index=False)
+        st.success('Recorded.')
+        st.rerun()
+st.dataframe(cur, width='stretch')

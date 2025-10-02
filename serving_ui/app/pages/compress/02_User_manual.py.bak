@@ -1,0 +1,263 @@
+# serving_ui/app/pages/98_User_Guide.py
+from __future__ import annotations
+import streamlit as st
+from textwrap import dedent
+import json
+from pathlib import Path
+
+# Optional: share app paths if available
+try:
+    from app.bootstrap import bootstrap_paths
+    bootstrap_paths()
+except Exception:
+    pass
+st.title("Help / User Guide")
+
+# ---------- Small helpers ----------
+def md(s: str):
+    st.markdown(dedent(s), unsafe_allow_html=False)
+
+def latex(s: str):
+    st.latex(s)
+
+# Keep the manual as a single canonical Markdown string (also downloadable)
+MANUAL_MD = dedent(r"""
+# Edge Finder â€“ User Manual
+
+## 1) General Overview
+Edge Finder is a Streamlit toolkit for exploring betting opportunities, simulating parlays, and tracking wagers. It reads CSV exports and presents interactive pages for filtering, optimizing, and recording bets.
+
+**Key files**
+- `exports/edges.csv` â€” single-leg edges produced by your ETL (e.g., `pull_stats.py`, `pull_lines.py`).
+- `exports/bets_log.csv` â€” master bet ledger, appended by multiple pages.
+- `exports/hedge_candidates.csv` â€” candidate rows for hedge analysis.
+
+---
+
+## 2) Pages & Workflows
+
+### Hub (`00_Hub.py`)
+Navigation only.
+
+### Edge Scanner (`15_Edge_Scanner.py`)
+**Purpose:** Identify single-leg edges where model probability beats the price.
+
+**Inputs & controls**
+- Reads `edges.csv`.
+- Sidebar filters: minimum win probability, odds range, distinct games only, top-K cap.
+
+**Outputs**
+- Filtered edges table.
+- Action: append selected edges to `bets_log.csv`.
+
+### Ghost Parlay Calculator (`08_Ghost_Parlay_Calc.py`)
+**Purpose:** Build parlays and then â€œghost optimizeâ€ by dropping weak legs to improve EV.
+
+**Key sidebar controls**
+- Max legs, Min leg win probability.
+- Min |odds| (exclude heavy favorites if desired).
+- Distinct games only (avoid correlated legs).
+- ROI% / Kelly thresholds and Top-N display.
+
+**Workflow**
+1. Click **Generate Ghost Parlays**.
+2. Review results table (odds, EV, ROI, Kelly).
+3. In **Select parlays to add to Bet Log**, choose parlays, set Stake/Book/Notes, click **Add selected to Bet Log**.
+
+### Bet Log (`06_Bet_Log.py`)
+**Purpose:** Central ledger of all wagers.
+
+**Inputs & actions**
+- Reads/writes `bets_log.csv`.
+- Add bets via UI or from other pages.
+- Add notes.
+
+**Outputs**
+- Full table (ts, game_id/market/side/odds/stake/p_win/EV/book/notes).
+- Good for backtesting and bankroll rollups.
+
+### Bankroll Tracker (`04_Bankroll_Tracker.py`)
+**Purpose:** Monitor bankroll performance.
+
+**Inputs**
+- Reads `bets_log.csv`, filter by date/book/stake.
+
+**Outputs**
+- ROI, cumulative P/L, weekly/monthly views.
+
+### Backtest (`03_Backt est.py`)
+**Purpose:** Simulate historical performance.
+
+**Inputs**
+- `edges.csv` + historical outcomes.
+- Choose seasons/weeks and stake strategy (flat, Kelly, fractional).
+
+**Outputs**
+- Equity curves, ROI by season/week.
+
+### Hedge Finder (`16_Hedge_Finder.py`)
+**Purpose:** Find profitable hedges across books.
+
+**Inputs**
+- `hedge_candidates.csv` + filters for min ROI, spreads, etc.
+
+**Outputs**
+- Hedge opportunities and stake splits.
+
+---
+
+## 3) Metrics & Formulas
+
+### Expected Value (EV)
+Per-unit EV:
+\[
+EV = p_{win} \cdot (D - 1) - (1 - p_{win})
+\]
+where \( D \) is decimal odds and \(p_{win}\) is the event probability.
+
+Interpretation: average profit per 1 unit staked. \(EV > 0\) is favorable in the long run.
+
+### ROI (Return on Investment)
+\[
+ROI = \frac{EV}{\text{stake}}
+\]
+Often shown as a percent. Example: \(EV = 0.10\), stake \(=1.0 \Rightarrow ROI = 10\%\).
+
+### Kelly Fraction
+Optimal bankroll fraction for growth:
+\[
+f^\* = \frac{b p - q}{b}, \quad b = D - 1,\; p = p_{win},\; q = 1 - p
+\]
+- If \(f^\* \le 0\): do not bet.
+- Many use half-Kelly or quarter-Kelly to reduce variance.
+
+### American â†” Decimal Odds
+\[
+D =
+\begin{cases}
+1 + \frac{A}{100} & \text{if } A > 0 \\
+1 + \frac{100}{|A|} & \text{if } A < 0
+\end{cases}
+\]
+and convert back accordingly.
+
+### Ghost Optimization (intuitive)
+Start with a parlay; if removing any single leg increases EV, drop it. Repeat until no single removal helps. This avoids â€œdead weightâ€ legs.
+
+### Distinct Games Filter
+Blocks correlated legs (e.g., Team ML + Team spread) to prevent overstated combined probability.
+
+---
+
+## 4) Practical Workflow
+
+1. **Update data** (ETL: `pull_stats.py`, `pull_lines.py`).
+2. **Scan edges** in Edge Scanner.
+3. **Build parlays** in Ghost Parlay.
+4. **Append to log** via Ghost Parlay or Bet Log.
+5. **Track bankroll** in Bankroll Tracker.
+6. **Backtest** strategy variants.
+7. **Explore hedges** when available.
+
+---
+
+## 5) Troubleshooting
+
+- **No parlays appear**  
+  Either `edges.csv` is empty or filters are too strict. Loosen min probability/odds and uncheck Distinct Games only to test; confirm `edges.csv` has rows.
+
+- **Buttons clear the table**  
+  Streamlit reruns pages on interaction. Persist results using `st.session_state` (the Ghost Parlay page in this repo already does this).
+
+- **`experimental_rerun` error**  
+  Newer Streamlit uses `st.rerun()`.
+
+- **Data not saving**  
+  Ensure `exports/` exists; create it if missing. Pages will create `bets_log.csv` when first saving.
+
+- **Weird characters (mojibake)**  
+  Save source files as UTF-8; prefer plain ASCII for button labels.
+
+---
+""").strip("\n")
+
+# Sidebar section navigator
+sections = [
+    "Overview",
+    "Pages & Workflows",
+    "Metrics & Formulas",
+    "Practical Workflow",
+    "Troubleshooting",
+    "Download Manual",
+]
+choice = st.sidebar.radio("Jump to section", sections, index=0, key="guide_section")
+
+# Main content render
+if choice == "Overview":
+    md("\n".join(MANUAL_MD.split("\n")[0:40]))  # up to first separator
+elif choice == "Pages & Workflows":
+    # Render the middle chunk that describes pages
+    start = MANUAL_MD.find("## 2) Pages & Workflows")
+    end   = MANUAL_MD.find("## 3) Metrics & Formulas")
+    md(MANUAL_MD[start:end])
+elif choice == "Metrics & Formulas":
+    md("### Expected Value (EV)")
+    latex(r"EV = p_{win} \cdot (D - 1) - (1 - p_{win})")
+    md("Where `D` is decimal odds.")
+    md("### ROI (Return on Investment)")
+    latex(r"ROI = \frac{EV}{\text{stake}}")
+    md("### Kelly Fraction")
+    latex(r"f^\* = \frac{b p - q}{b}, \quad b=D-1,\; p = p_{win},\; q=1-p")
+    md("### American â†” Decimal Odds")
+    latex(r"D = 1 + \frac{A}{100}\ \text{if}\ A>0;\quad D = 1 + \frac{100}{|A|}\ \text{if}\ A<0")
+    md("### Ghost Optimization & Distinct Games")
+    md("Greedy leg-dropping to improve EV; distinct-games prevents correlated legs.")
+elif choice == "Practical Workflow":
+    start = MANUAL_MD.find("## 4) Practical Workflow")
+    end   = MANUAL_MD.find("## 5) Troubleshooting")
+    md(MANUAL_MD[start:end])
+elif choice == "Troubleshooting":
+    start = MANUAL_MD.find("## 5) Troubleshooting")
+    md(MANUAL_MD[start:])
+else:
+    st.download_button(
+        label="Download Manual (Markdown)",
+        data=MANUAL_MD.encode("utf-8"),
+        file_name="USER_MANUAL.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+
+# Also show tabs for quick browsing inside the page
+st.divider()
+t1, t2, t3, t4, t5 = st.tabs(
+    ["Overview", "Pages", "Metrics", "Workflow", "Troubleshooting"]
+)
+
+with t1:
+    md(MANUAL_MD.split("---")[0])
+
+with t2:
+    start = MANUAL_MD.find("## 2) Pages & Workflows")
+    end   = MANUAL_MD.find("## 3) Metrics & Formulas")
+    md(MANUAL_MD[start:end])
+
+with t3:
+    st.write("Formulas rendered with LaTeX:")
+    latex(r"EV = p_{win} \cdot (D - 1) - (1 - p_{win})")
+    latex(r"ROI = \frac{EV}{\text{stake}}")
+    latex(r"f^\* = \frac{b p - q}{b},\quad b = D - 1,\; p = p_{win},\; q = 1 - p")
+    latex(r"D = 1 + \frac{A}{100}\ (A>0),\quad D = 1 + \frac{100}{|A|}\ (A<0)")
+
+with t4:
+    start = MANUAL_MD.find("## 4) Practical Workflow")
+    end   = MANUAL_MD.find("## 5) Troubleshooting")
+    md(MANUAL_MD[start:end])
+
+with t5:
+    start = MANUAL_MD.find("## 5) Troubleshooting")
+    md(MANUAL_MD[start:])
+
+
+
+

@@ -1,0 +1,205 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1; break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2; break
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path: sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app"); pkg_app.__path__ = [str(Path(base) / "app")]; sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib"); pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]; sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec); assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login; show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+
+import sys
+from pathlib import Path
+import streamlit as st
+_here = Path(__file__).resolve()
+for up in [_here] + list(_here.parents):
+    cand = up / 'serving_ui' / 'app' / '__init__.py'
+    if cand.exists():
+        base = str((up / 'serving_ui').resolve())
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        break
+PAGE_PROTECTED = False
+auth = login(required=PAGE_PROTECTED)
+if not auth.ok:
+    st.stop()
+show_logout()
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+import sys
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+_SERVING_UI = _HERE.parents[2]
+if str(_SERVING_UI) not in sys.path:
+    sys.path.insert(0, str(_SERVING_UI))
+st.set_page_config(page_title='00 Shortcuts', page_icon='📈', layout='wide')
+
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+try:
+    from app.utils.diagnostics import mount_in_sidebar
+except ModuleNotFoundError:
+    try:
+        import sys
+        from pathlib import Path as _efP
+        sys.path.append(str(_efP(__file__).resolve().parents[3]))
+        from app.utils.diagnostics import mount_in_sidebar
+    except Exception:
+        try:
+            from utils.diagnostics import mount_in_sidebar
+        except Exception:
+
+            def mount_in_sidebar(page_name: str):
+                return None
+import json
+from pathlib import Path
+from urllib.parse import urlparse
+from lib.auth import login, show_logout
+st.title('🔗 Sportsbook Shortcuts')
+auth = login()
+if not getattr(auth, 'authenticated', False):
+    st.info('Please sign in to manage your shortcuts.')
+    st.stop()
+st.caption(f'Signed in as **{auth.name}** ({auth.role})')
+st.divider()
+
+def _storage_dir() -> Path:
+    """Directory for per-user shortcut JSON files."""
+    here = Path(__file__).resolve()
+    app_root = here.parent.parent
+    d = app_root / 'user_data' / 'shortcuts'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def _user_key() -> str:
+    nm = str(getattr(auth, 'name', 'user')).strip() or 'user'
+    safe = ''.join((ch for ch in nm if ch.isalnum() or ch in ('-', '_'))).strip('_')
+    return safe or 'user'
+
+def _user_file() -> Path:
+    return _storage_dir() / f'{_user_key()}.json'
+
+def load_shortcuts() -> dict[str, str]:
+    p = _user_file()
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+    return {}
+
+def save_shortcuts(d: dict[str, str]) -> None:
+    p = _user_file()
+    p.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding='utf-8')
+
+def is_valid_https(url: str) -> bool:
+    try:
+        url = url.strip()
+        if not url.lower().startswith('https://'):
+            return False
+        parsed = urlparse(url)
+        return parsed.scheme == 'https' and bool(parsed.netloc)
+    except Exception:
+        return False
+if 'shortcuts' not in st.session_state:
+    st.session_state.shortcuts = load_shortcuts()
+with st.form('add_shortcut', clear_on_submit=True):
+    st.subheader('Add a sportsbook shortcut')
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        name = st.text_input('Book name', placeholder='DraftKings')
+    with c2:
+        url = st.text_input('Login URL (HTTPS)', placeholder='https://sportsbook.draftkings.com')
+    submitted = st.form_submit_button('Add shortcut')
+    if submitted:
+        name_clean = (name or '').strip()
+        url_clean = (url or '').strip()
+        if not name_clean:
+            st.error('Please enter a book name.')
+        elif not url_clean:
+            st.error('Please enter a URL.')
+        elif not is_valid_https(url_clean):
+            st.error('URL must be HTTPS and well-formed.')
+        else:
+            st.session_state.shortcuts[name_clean] = url_clean
+            save_shortcuts(st.session_state.shortcuts)
+            st.success(f'Added/updated shortcut for **{name_clean}**.')
+st.divider()
+st.subheader('Your shortcuts')
+if not st.session_state.shortcuts:
+    st.info('No shortcuts yet. Add one above!')
+else:
+    for i, (nm, link) in enumerate(sorted(st.session_state.shortcuts.items(), key=lambda kv: kv[0].lower())):
+        row = st.container()
+        with row:
+            c1, c2, c3 = st.columns([2, 4, 1])
+            with c1:
+                st.write(f'**{nm}**')
+            with c2:
+                try:
+                    st.link_button(f'Open {nm}', link)
+                    st.caption(link)
+                except Exception:
+                    st.markdown(f'[Open {nm}]({link})')
+                    st.caption(link)
+            with c3:
+                if st.button('🗑️ Delete', key=f'del_{i}'):
+                    st.session_state.shortcuts.pop(nm, None)
+                    save_shortcuts(st.session_state.shortcuts)
+                    st.toast(f'Deleted {nm}', icon='🗑️')
+                    st.rerun()
+st.divider()
+with st.expander('Security notes', expanded=False):
+    st.markdown('\n- This page stores **only the shortcut name and HTTPS URL** locally for your account.\n- **No usernames or passwords** are collected or stored here.\n- Clicking a shortcut opens the sportsbook site/app where you log in **directly with them**.\n- For deeper integrations (e.g., auto-login), an **official OAuth/API** from the sportsbook would be required.\n        '.strip())
+show_logout()
+
+
+
+
+
+
+

@@ -1,0 +1,66 @@
+# serving_ui/app/pages/15_Calibration.py
+import pandas as pd
+import streamlit as st
+from pathlib import Path
+
+from serving_ui.app._layout import header
+from app.lib.betlog import read_log
+from app.lib.metrics import brier_score, log_loss, calibration_bins, outcome_to_binary
+
+header("Model Calibration & Scorecard")
+st.caption("Evaluate probability quality using **settled bets** from your bet log (Brier, LogLoss, reliability curve).")
+
+df = read_log()
+if df.empty:
+    st.warning("No bets in log. Add/settle some first.")
+    st.stop()
+
+df.columns = [c.strip().lower() for c in df.columns]
+need = {"result", "model_p"}
+if not need.issubset(df.columns):
+    st.info("Need columns `result` and `model_p`. Add picks from Explorer and settle results.")
+    st.stop()
+
+# filter settled only
+df_set = df[~df["result"].astype(str).str.lower().isin(["","open"])].copy()
+if df_set.empty:
+    st.info("No settled bets with model probabilities yet.")
+    st.stop()
+
+# optional filters
+with st.expander("Filters"):
+    for c in ["sport","league","market","book","season","week"]:
+        if c in df_set.columns:
+            vals = sorted(v for v in df_set[c].dropna().unique().tolist())
+            pick = st.multiselect(c.capitalize(), vals, default=vals, key=f"cal_{c}")
+            if pick:
+                df_set = df_set[df_set[c].isin(pick)]
+
+# ground truth (binary)
+y = outcome_to_binary(df_set["result"])
+p = pd.to_numeric(df_set["model_p"], errors="coerce").clip(0,1)
+
+# scores
+brier = brier_score(y, p)
+ll    = log_loss(y, p)
+
+c1,c2 = st.columns(2)
+c1.metric("Brier Score (Ã¢â€ â€œ better)", f"{brier:.4f}")
+c2.metric("Log Loss (Ã¢â€ â€œ better)", f"{ll:.4f}")
+
+# reliability curve
+bins = st.slider("Bins", 5, 20, 10)
+cal = calibration_bins(y, p, n_bins=bins)
+st.subheader("Reliability Curve")
+st.line_chart(cal.set_index("p_avg")[["y_rate"]], height=220)
+st.caption("A perfectly calibrated model lies close to the diagonal (y_rate Ã¢â€°Ë† p_avg).")
+
+with st.expander("Calibration table"):
+    st.dataframe(cal, use_container_width=True, hide_index=True)
+    st.download_button("Download calibration.csv", data=cal.to_csv(index=False).encode(),
+                       file_name="calibration.csv", mime="text/csv")
+
+
+
+
+

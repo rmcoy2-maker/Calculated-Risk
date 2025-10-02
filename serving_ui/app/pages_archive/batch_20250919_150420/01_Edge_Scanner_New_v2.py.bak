@@ -1,0 +1,24 @@
+import streamlit as st
+import pandas as pd
+from serving_ui.serving.scan_edges import main as run_edge_scan
+from core_engine.utils.paths import EXPORTS_DIR
+
+st.title("Edge Scanner (New)")
+
+if st.button("Run edge scan"):
+    run_edge_scan()
+    st.success("Edges updated. Reloadingâ€¦")
+    st.rerun()
+
+edges_path = EXPORTS_DIR / "edges.csv"
+if edges_path.exists():
+    df = pd.read_csv(edges_path)
+    st.dataframe(df, use_container_width=True)
+else:
+    st.info("No edges yet â€” click **Run edge scan**.")
+
+
+
+
+
+

@@ -1,0 +1,105 @@
+﻿import streamlit as st
+
+import streamlit as st
+try:
+    st.set_page_config(page_title="Edge Finder", layout="wide", initial_sidebar_state="expanded")
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+st.set_page_config(page_title="Edge Finder", layout="wide", initial_sidebar_state="expanded")
+st.markdown("""
+<style>
+  .block-container {max-width: 1600px; padding-top: 0.5rem; padding-left: 1.0rem; padding-right: 1.0rem;}
+</style>
+""", unsafe_allow_html=True)
+
+# -*- coding: utf-8 -*-
+# Hedge Finder — find opposite-side pairs with controls + export
+
+from itertools import combinations
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+EDGES_CSV = Path("exports/edges.csv")
+
+def read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists(): return pd.DataFrame()
+    try:
+        if path.stat().st_size == 0: return pd.DataFrame()
+    except Exception: pass
+    for kw in ({"encoding":"utf-8-sig"}, {}, {"engine":"python"}):
+        try: return pd.read_csv(path, **kw)
+        except Exception: continue
+    return pd.DataFrame()
+
+def am_to_dec(american) -> float | None:
+    try: a = float(american)
+    except Exception: return None
+    if a == 0: return None
+    return 1.0 + (a/100.0 if a > 0 else 100.0/abs(a))
+
+def load_edges() -> pd.DataFrame:
+    df = read_csv_safe(EDGES_CSV)
+    if df.empty: return df
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    df["sort_ts"] = pd.to_datetime(df.get("ts"), errors="coerce")
+    for c in ("game_id","market","side","odds","edge","ref","league","sport"):
+        if c not in df.columns: df[c] = ""
+    df["odds"] = pd.to_numeric(df["odds"], errors="coerce")
+    return df
+
+def is_opposite(a: str, b: str, mode: str) -> bool:
+    if not a or not b: return False
+    A, B = a.strip().lower(), b.strip().lower()
+    if mode == "Strict (OU/Home-Away)":
+        pairs = {("over","under"),("home","away")}
+        return (A,B) in pairs or (B,A) in pairs
+    # Loose: any different sides
+    return A != B
+
+st.subheader("Hedge Finder")
+
+df = load_edges()
+top = st.columns([1,1,2,1])
+with top[0]:
+    newest_first = st.toggle("Newest first", value=True)
+with top[1]:
+    mode = st.selectbox("Side match", ["Strict (OU/Home-Away)","Loose (any different)"], index=0)
+with top[2]:
+    odds_min, odds_max = st.slider("Odds window (American, abs)", 100, 300, (100, 200),
+                                   help="Only pair legs with |odds| in this window.")
+with top[3]:
+    run = st.button("Find hedges", type="primary", use_container_width=True)
+
+if "sort_ts" in df.columns:
+    df = df.sort_values("sort_ts", ascending=not newest_first, na_position="last").reset_index(drop=True)
+
+if df.empty:
+    st.info("No edges found.")
+    st.stop()
+
+games = df["game_id"].dropna().astype(str).unique().tolist()
+game = st.selectbox("Game", ["All"] + games)
+
+subset = df if game == "All" else df[df["game_id"].astype(str) == game]
+subset = subset[subset["odds"].abs().between(odds_min, odds_max, inclusive="both")]
+
+if not run:
+    st.info("Adjust filters and click **Find hedges**.")
+    st.stop()
+
+rows = []
+for (gid, mkt), g in subset.groupby(["game_id","market"], dropna=False):
+    g = g.reset_index(drop=True)
+    for i, j in combinations(range(len(g)), 2):
+        a, b = g.loc[i], g.loc[j]
+        if is_opposite(\1): # (patched)
+

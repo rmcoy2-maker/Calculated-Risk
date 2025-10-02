@@ -1,0 +1,242 @@
+import pandas as pd
+import numpy as np
+from pathlib import Path`r`nfrom typing import Optional
+
+PIPE_COLS = ["season","week","home","away","spread_close","total_close","ml_home","ml_away"]
+
+ALIASES = {
+    "season": ["season","year"],
+    "week":   ["week","wk","game_week"],
+    "home":   ["home","home_team","team_home","home_name","homeclub","home_name_full"],
+    "away":   ["away","away_team","team_away","visitor","road_name","awayclub","away_name_full"],
+
+    # Spreads (prefer home perspective). Include TheLines "spread_open".
+    "spread_close": [
+        "spread_close","closing_spread","final_spread","spread_closing","close_spread",
+        "spread","spread_home_close","home_spread_close","home_spread","spread_home",
+        "line_close","closing_line","line","hcp_close","hcp_closing","handicap_close",
+        "spread_open"
+    ],
+
+    # Totals / O/U. Include "total_open" for future sources.
+    "total_close": [
+        "total_close","closing_total","final_total","total_closing","close_total",
+        "ou_close","o_u_close","o/u_close","ou","o_u","o/u","total","points_total_close",
+        "total_open"
+    ],
+
+    # Moneylines — include TheLines _est columns.
+    "ml_home": ["ml_home","moneyline_home","home_ml","home_moneyline","ml_h","home_price","ml_home_close","ml_home_est"],
+    "ml_away": ["ml_away","moneyline_away","away_ml","away_moneyline","ml_a","away_price","ml_away_close","ml_away_est"],
+
+    "date":    ["date","game_date","start_date","kickoff","datetime"]
+}
+
+def _first_present(candidates, df_cols):
+    lower = {c.lower(): c for c in df_cols}
+    for c in candidates:
+        if c.lower() in lower:
+            return lower[c.lower()]
+    return None
+
+NFL_ALIASES = {
+    # canonical -> aliases (lowercased)
+    "49ers": ["49ers","san francisco","sf","sfo","niners"],
+    "Bears": ["bears","chicago","chi"],
+    "Bengals": ["bengals","cincinnati","cin"],
+    "Bills": ["bills","buffalo","buf"],
+    "Broncos": ["broncos","denver","den"],
+    "Browns": ["browns","cleveland","cle"],
+    "Buccaneers": ["buccaneers","bucs","tampa bay","tb","tampa"],
+    "Cardinals": ["cardinals","arizona","ari","cards"],
+    "Chargers": ["chargers","los angeles chargers","la chargers","lac"],
+    "Chiefs": ["chiefs","kansas city","kc"],
+    "Colts": ["colts","indianapolis","ind"],
+    "Commanders": ["commanders","washington","wsh","was"],
+    "Cowboys": ["cowboys","dallas","dal"],
+    "Dolphins": ["dolphins","miami","mia"],
+    "Eagles": ["eagles","philadelphia","phi"],
+    "Falcons": ["falcons","atlanta","atl"],
+    "Giants": ["giants","new york giants","nyg"],
+    "Jaguars": ["jaguars","jags","jacksonville","jax","jck"],
+    "Jets": ["jets","new york jets","nyj"],
+    "Lions": ["lions","detroit","det"],
+    "Packers": ["packers","green bay","gb"],
+    "Panthers": ["panthers","carolina","car"],
+    "Patriots": ["patriots","new england","ne","nwe"],
+    "Raiders": ["raiders","las vegas","lv","oak"],  # include old alias to catch legacy text
+    "Rams": ["rams","los angeles rams","la rams","lar","st. louis rams"],
+    "Ravens": ["ravens","baltimore","bal"],
+    "Saints": ["saints","new orleans","no","nor"],
+    "Seahawks": ["seahawks","seattle","sea"],
+    "Steelers": ["steelers","pittsburgh","pit"],
+    "Texans": ["texans","houston","hou"],
+    "Titans": ["titans","tennessee","ten"],
+    "Vikings": ["vikings","minnesota","min"]
+}
+# Flatten alias -> canonical
+ALIAS_TO_TEAM = {alias: canon for canon, aliases in NFL_ALIASES.items() for alias in aliases}
+
+def _guess_team(text: str) -> Optional[str]:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = text.lower()
+    hits = []
+    for alias, canon in ALIAS_TO_TEAM.items():
+        if alias in t:
+            hits.append(canon)
+    # unique canonical if exactly one team matched
+    if len(set(hits)) == 1:
+        return hits[0]
+    return None
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
+    out = {}
+    for std, alts in ALIASES.items():
+        src = _first_present(alts, df.columns)
+        if src is not None:
+            out[std] = df[src]
+    nd = pd.DataFrame(out)
+
+    # Ensure pipeline columns exist
+    for c in PIPE_COLS:
+        if c not in nd.columns:
+            nd[c] = np.nan
+
+    # Heuristics to fill missing spread/total from common alternates
+    if nd["spread_close"].isna().all():
+        pair_cols = [
+            ("home_spread_close","away_spread_close"),
+            ("home_spread","away_spread"),
+            ("spread_home","spread_away"),
+        ]
+        for h,a in pair_cols:
+            if h in nd.columns and a in nd.columns:
+                nd["spread_close"] = pd.to_numeric(nd[h], errors="coerce")
+                break
+        if nd["spread_close"].isna().all() and "spread_open" in nd.columns:
+            nd["spread_close"] = pd.to_numeric(nd["spread_open"], errors="coerce")
+        if nd["spread_close"].isna().all() and "spread" in nd.columns:
+            nd["spread_close"] = pd.to_numeric(nd["spread"], errors="coerce")
+        if nd["spread_close"].isna().all() and "line" in nd.columns:
+            nd["spread_close"] = pd.to_numeric(nd["line"], errors="coerce")
+
+    if nd["total_close"].isna().all():
+        for c in ["ou_close","o_u_close","o/u_close","ou","o_u","o/u","total","closing_total","final_total","points_total_close","total_open"]:
+            if c in nd.columns:
+                nd["total_close"] = pd.to_numeric(nd[c], errors="coerce")
+                if nd["total_close"].notna().any():
+                    break
+
+    # Types
+    for c in ["season","week"]:
+        nd[c] = pd.to_numeric(nd[c], errors="coerce").astype("Int64")
+    for c in ["spread_close","total_close","ml_home","ml_away"]:
+        nd[c] = pd.to_numeric(nd[c], errors="coerce")
+
+    # Clean team strings (note: your current source has sentences here; this still normalizes)
+    for c in ["home","away"]:
+        nd[c] = nd[c].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+
+    # Resolve sentence-like values into team names when unambiguous
+    if nd["home"].astype(str).str.len().gt(30).any() or nd["away"].astype(str).str.len().gt(30).any():
+        nd["home_guess"] = nd["home"].apply(_guess_team)
+        nd["away_guess"] = nd["away"].apply(_guess_team)
+        nd["home"] = nd["home_guess"].combine_first(nd["home"])
+        nd["away"] = nd["away_guess"].combine_first(nd["away"])
+        nd.drop(columns=[c for c in ["home_guess","away_guess"] if c in nd.columns], inplace=True)
+    # Resolve sentences to canonical team names when possible
+    if nd["home"].astype(str).str.len().gt(30).any() or nd["away"].astype(str).str.len().gt(30).any():
+        # only try to resolve when strings look sentence-like (heuristic length>30)
+        nd["home_guess"] = nd["home"].apply(_guess_team)
+        nd["away_guess"] = nd["away"].apply(_guess_team)
+        nd["home"] = nd["home_guess"].combine_first(nd["home"])
+        nd["away"] = nd["away_guess"].combine_first(nd["away"])
+        nd.drop(columns=[col for col in ["home_guess","away_guess"] if col in nd.columns], inplace=True)
+    keep = PIPE_COLS + (["date"] if "date" in nd.columns else [])
+    return nd[keep]
+
+def read_csv_if_exists(p: Path):
+    if p.exists():
+        try:
+            return pd.read_csv(p)
+        except Exception as e:
+            print(f"[warn] failed reading {p.name}: {e}")
+    return None
+
+def first_non_null(series: pd.Series):
+    s = series.dropna()
+    return s.iloc[0] if len(s) else np.nan
+
+def main():
+    exports = Path("exports")
+    exports.mkdir(parents=True, exist_ok=True)
+
+    # Candidate source files (exclude outputs)
+    candidates = [
+        exports / "historical_odds_thelines.csv",
+        exports / "historical_odds_oddsshark.csv",
+        exports / "historical_odds_soh.csv",
+        exports / "historical_odds_covers.csv",
+    ]
+    for p in exports.glob("historical_odds_*.csv"):
+        if p.name not in {"historical_odds.csv","historical_odds_merged.csv"} and p not in candidates:
+            candidates.append(p)
+
+    frames = []
+    for p in candidates:
+        df = read_csv_if_exists(p)
+        if df is not None and len(df):
+            nd = normalize(df)
+            nd["source_file"] = p.name
+            frames.append(nd)
+
+    if not frames:
+        raise FileNotFoundError("No source odds CSVs found in ./exports")
+
+    merged_all = pd.concat(frames, ignore_index=True)
+    merged_all = merged_all[merged_all["home"].notna() & merged_all["away"].notna()].drop_duplicates()
+
+# Drop rows where home/away are clearly not team names
+junk_patterns = ("sportsbook","also read","top sportsbooks","preview","odds:", "bet now")
+mask_junk = (
+    merged_all["home"].str.lower().str.contains("|".join(junk_patterns), na=False) |
+    merged_all["away"].str.lower().str.contains("|".join(junk_patterns), na=False)
+)
+merged_all = merged_all[~mask_junk]
+
+    group_cols = ["season","week","home","away"]
+
+    # Build canonical by taking the first non-null per column within each (season,week,home,away)
+    # Avoid GroupBy.apply(include_groups=...) to keep compatibility & silence warnings.
+    # We will aggregate each column with a "first_non_null" lambda.
+    agg_map = {c: first_non_null for c in merged_all.columns if c not in group_cols}
+    canon = merged_all.groupby(group_cols, dropna=False, as_index=False).agg(agg_map)
+
+    # Ensure pipeline columns exist & order
+    for c in PIPE_COLS:
+        if c not in canon.columns:
+            canon[c] = np.nan
+    canon = canon[PIPE_COLS + (["date"] if "date" in canon.columns else [])]
+
+    # Write outputs
+    (exports / "historical_odds_merged.csv").write_text(merged_all.to_csv(index=False))
+    (exports / "historical_odds.csv").write_text(canon[PIPE_COLS].to_csv(index=False))
+
+    # Report
+    def pct(col):
+        s = canon[col]
+        return f"{(s.notna().mean()*100):.1f}%"
+    ml_pct = (canon[["ml_home","ml_away"]].notna().all(axis=1).mean()*100)
+    print(f"[done] sources={len(frames)} rows_raw={len(merged_all)} rows_canon={len(canon)} | "
+          f"spread_close avail: {pct('spread_close')} | total_close  avail: {pct('total_close')} | "
+          f"moneyline    avail: {ml_pct:.1f}%")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+

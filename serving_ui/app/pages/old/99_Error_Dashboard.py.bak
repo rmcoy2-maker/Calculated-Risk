@@ -1,0 +1,64 @@
+﻿# --- auto-added: newest-first patch ---
+from __future__ import annotations
+try:
+    # Preferred absolute import (when 'app' is a proper package)
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        # Fallback if pages are executed such that relative path works
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+        # Final no-op guard
+        def __nfp_apply(_): 
+            return
+import streamlit as st  # ensure alias available
+__nfp_apply(st)
+# --- end auto-added ---
+from app.bootstrap import bootstrap_paths; bootstrap_paths()
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]   # .../serving_ui/app
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+# === end boot ===# --- path bootstrap: allow `import app.*` from any page ---
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from pathlib import Path
+import streamlit as st
+
+st.set_page_config(page_title="Error Dashboard", layout="wide")
+st.title("🚨 Error Dashboard")
+
+ROOT = Path(__file__).resolve().parents[2]
+LOGFILE = ROOT / "exports" / "errors.log"
+
+colA, colB = st.columns([2,1])
+with colA:
+    st.write("Log file:", LOGFILE)
+with colB:
+    if st.button("🧹 Clear log"):
+        LOGFILE.write_text("", encoding="utf-8")
+        st.success("Cleared.")
+        st.experimental_rerun()
+
+if not LOGFILE.exists() or LOGFILE.stat().st_size == 0:
+    st.success("✅ No errors logged yet.")
+else:
+    st.download_button("⬇️ Download errors.log", LOGFILE.read_bytes(), file_name="errors.log")
+    st.text_area("Errors", LOGFILE.read_text(encoding="utf-8"), height=600)
+
+
+
+
+
+
+
+
+

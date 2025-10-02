@@ -1,0 +1,874 @@
+from __future__ import annotations
+# -*- coding: utf-8 -*-
+# Backtest — seasons/weeks filters, full analytics, equity curve, edges preview (wide + clean)
+
+import os
+from pathlib import Path
+from datetime import datetime
+from typing import Iterable, Tuple
+import typing
+import streamlit as st
+import numpy as np
+import pandas as pd
+
+PARLAY_GROUP_CANDIDATES = [
+    "parlay_id", "slip_id", "ticket_id", "bet_id", "wager_id", "group_id"
+]
+TS_CANDIDATES = [
+    "sort_ts", "ts", "placed_at", "event_ts", "game_ts", "kickoff",
+    "datetime", "date", "start_time", "scheduled"
+]
+
+def ensure_sort_ts(df: pd.DataFrame) -> pd.DataFrame:
+    """Create df['sort_ts'] from any datetime-like columns; fall back to a stable surrogate."""
+    if df is None or df.empty:
+        return df
+    if "sort_ts" in df.columns:
+        return df
+
+    # try to coerce any candidate to UTC datetimes and take first non-null across them
+    s = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+    for c in TS_CANDIDATES:
+        if c in df.columns:
+            s = s.fillna(pd.to_datetime(df[c], errors="coerce", utc=True))
+
+    df = df.copy()
+    if s.notna().any():
+        base = pd.Timestamp.utcnow()
+        df["sort_ts"] = s.fillna(base) + pd.to_timedelta(np.arange(len(df)), unit="s")
+        return df
+
+    # last resort: synthesize from season/week or row order so sort never explodes
+    base = pd.Timestamp.utcnow()
+    if {"season", "week"} <= set(df.columns):
+        season_dt = pd.to_datetime(df["season"].astype(str) + "-01-01", errors="coerce", utc=True)
+        week_off = pd.to_timedelta(pd.to_numeric(df["week"], errors="coerce").fillna(1).astype(int), unit="W")
+        df["sort_ts"] = season_dt.fillna(base) + week_off + pd.to_timedelta(np.arange(len(df)), unit="s")
+    else:
+        df["sort_ts"] = base + pd.to_timedelta(np.arange(len(df)), unit="s")
+    return df
+
+def ensure_parlay_grouping(df: pd.DataFrame, parlay_mode: bool):
+    """Return (df, group_col, parlay_mode). Make a safe grouping if none exists."""
+    if df is None or df.empty:
+        return df, None, False
+    for c in PARLAY_GROUP_CANDIDATES:
+        if c in df.columns and df[c].notna().any():
+            return df, c, parlay_mode
+    if parlay_mode:
+        df = df.copy()
+        df["parlay_id"] = np.arange(len(df))  # degrade: each row is its own group
+        return df, "parlay_id", parlay_mode
+    return df, None, parlay_mode
+
+st.set_page_config(page_title="Backtest", layout="wide")
+
+\#\ ====\ \[PATCH]\ Parlay\ UI\ hook\ \(Start\ new\ slip\)\ ====\ntry:\n\ \ \ \ if\ 'active_slip_id'\ not\ in\ st\.session_state:\n\ \ \ \ \ \ \ \ st\.session_state\['active_slip_id']\ =\ None\n\n\ \ \ \ with\ st\.sidebar:\n\ \ \ \ \ \ \ \ if\ st\.button\('Start\ new\ slip',\ key='btn_start_new_slip'\):\n\ \ \ \ \ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ st\.session_state\['active_slip_id']\ =\ new_slip_id\(\)\n\ \ \ \ \ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \#\ fallback\ if\ helper\ missing\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ import\ secrets,\ datetime\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ st\.session_state\['active_slip_id']\ =\ 'S'\ \+\ datetime\.datetime\.now\(\)\.strftime\('%y%m%d-%H%M%S'\)\ \+\ '-'\ \+\ secrets\.token_hex\(2\)\n\ \ \ \ \ \ \ \ if\ st\.session_state\['active_slip_id']:\n\ \ \ \ \ \ \ \ \ \ \ \ st\.caption\(f'Active\ slip:\ \{st\.session_state\[''active_slip_id'']}'\)\nexcept\ Exception\ as\ _e:\n\ \ \ \ pass\n\#\ ====\ \[END\ PATCH]\ ====
+# ===================
+# Paths & IO helpers
+# ===================
+def _find_edges_csv() -> Path:
+    # 1) allow override via env var
+    env = os.environ.get("EDGES_CSV")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+
+    # 2) walk upward from this file until we find exports/edges.csv
+    here = Path(__file__).resolve()
+    for base in [here.parent, *here.parents]:
+        candidate = base / "exports" / "edges.csv"
+        if candidate.exists():
+            return candidate
+
+    # 3) last-ditch guess: repo-root/exports/edges.csv
+    # (adjust parents depth if your layout differs)
+    return here.parents[3] / "exports" / "edges.csv"
+
+EDGES_CSV = _find_edges_csv()
+st.caption(f"Reading edges from: `{EDGES_CSV}`")
+
+def read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    for kw in ({"encoding": "utf-8-sig"}, {}, {"engine": "python"}):
+        try:
+            return pd.read_csv(path, **kw)
+        except Exception:
+            continue
+    return pd.DataFrame()
+from datetime import datetime
+import hashlib
+import secrets
+
+PREFERRED_GROUP_COLS = ["parlay_id", "slip_id", "ticket_id", "bet_id"]
+
+def _safe_cols(df, cols):
+    return [c for c in cols if c in df.columns]
+
+def new_slip_id(prefix="S"):
+    # Example: S250922-173012-a3f1  (date-time + short token)
+    return f"{prefix}{datetime.now():%y%m%d-%H%M%S}-{secrets.token_hex(2)}"
+
+def ensure_grouping_column(df, want_parlay=True):
+    """
+    Ensures df has a grouping column to represent a parlay/ticket/slip.
+    Returns (df_with_group, group_col_name, note)
+    """
+    if df.empty:
+        return df, None, "No rows."
+
+    # 1) If one of the preferred columns exists, use it.
+    for c in PREFERRED_GROUP_COLS:
+        if c in df.columns:
+            return df, c, f"Using existing '{c}'."
+
+    # 2) If we don't want parlays, bail out (singles logic elsewhere).
+    if not want_parlay:
+        return df, None, "Parlay mode OFF; no grouping column needed."
+
+    # 3) Try to infer a stable grouping if helpful hints exist
+    hint_sets = [
+        ["parlay_key", "parlay_uuid", "parlay_tag"],
+        ["slip_key", "slip_uuid"],
+        ["ticket_key", "ticket_uuid"],
+        ["house_run_id"],                       # e.g., House/Scanner runs
+        ["user_id", "ts"],                      # same user at same ts
+        ["event_id", "leg_index", "ts"],        # identical combos
+    ]
+    for hints in hint_sets:
+        have = _safe_cols(df, hints)
+        if len(have) >= 1:
+            # Build a hash of available hint columns row-wise
+            def _hash_row(row):
+                key = "|".join(str(row.get(h, "")) for h in have)
+                return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+            grouped = df.copy()
+            grouped["slip_id"] = grouped.apply(_hash_row, axis=1)
+            return grouped, "slip_id", f"Constructed 'slip_id' from hints {have}."
+
+    # 4) Last resort: make every row its own single-slip (still satisfies grouping)
+    grouped = df.copy()
+    grouped["slip_id"] = [f"S{str(i).zfill(6)}" for i in range(len(grouped))]
+    return grouped, "slip_id", "No hints found; assigned one slip per row."
+
+# --- EF 2017+ window & safe readers -----------------------------------------
+MIN_SEASON = 2017
+VALID_WEEKS = list(range(1, 23))  # 1..22 including playoffs; adjust if needed
+
+def _read_csv_safe_any(path: Path | str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    for kw in ({"encoding":"utf-8-sig"}, {}, {"engine":"python"}):
+        try:
+            return pd.read_csv(p, **kw)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+@st.cache_data(show_spinner=False)
+def load_scores_csv(path: Path | str) -> pd.DataFrame:
+    df = _read_csv_safe_any(path)
+    if df.empty:
+        return df
+    # normalize common columns
+    for c in ("season","week"):
+        if c not in df.columns: df[c] = pd.NA
+    df["season"] = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+    df["week"]   = pd.to_numeric(df["week"],   errors="coerce").astype("Int64")
+    df = df[df["season"].between(MIN_SEASON, 3000, inclusive="both")]
+    df = df[df["week"].isin(VALID_WEEKS)]
+    return df.reset_index(drop=True)
+
+@st.cache_data(show_spinner=False)
+def load_plays_csv(path: Path | str) -> pd.DataFrame:
+    df = _read_csv_safe_any(path)
+    if df.empty:
+        return df
+    if "season" in df.columns:
+        df["season"] = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+        df = df[df["season"].between(MIN_SEASON, 3000, inclusive="both")]
+    if "week" in df.columns:
+        df["week"] = pd.to_numeric(df["week"], errors="coerce").astype("Int64")
+        df = df[df["week"].isin(VALID_WEEKS)]
+    return df.reset_index(drop=True)
+
+def seasons_from_scores(scores_df: pd.DataFrame) -> list[int]:
+    if scores_df.empty or "season" not in scores_df.columns:
+        return []
+    vals = scores_df["season"].dropna().astype(int).tolist()
+    vals = sorted({s for s in vals if s >= MIN_SEASON})
+    return vals
+
+def weeks_from_scores(scores_df: pd.DataFrame, seasons: list[int]) -> list[int]:
+    if scores_df.empty or not seasons: return VALID_WEEKS
+    df = scores_df[scores_df["season"].isin(seasons)]
+    if "week" not in df.columns: return VALID_WEEKS
+    ws = sorted({int(x) for x in df["week"].dropna().tolist() if x in VALID_WEEKS})
+    return ws or VALID_WEEKS
+
+def banner_file_status(path: Path | str, label: str):
+    p = Path(path)
+    if not p.exists():
+        st.error(f"Missing {label}: `{p}`")
+    elif p.stat().st_size == 0:
+        st.error(f"Empty {label}: `{p}` (0 bytes). Re-generate this file.")
+    else:
+        st.caption(f"{label} found: `{p}`")
+
+# (Optional) stub where you can later “grade” edges from scores if .result is missing
+def settle_edges_from_scores_if_needed(edges_df: pd.DataFrame, scores_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Minimal placeholder: if edges have no 'result', keep as-is (0 PnL).
+    Later you can map edges->scores by game_id and infer win/lose/push per market.
+    """
+    return edges_df
+# ---------------------------------------------------------------------------
+
+# ============
+# Normalizers
+# ============
+def am_to_dec(american) -> float | None:
+    try:
+        a = float(american)
+    except Exception:
+        return None
+    if a == 0:
+        return None
+    return 1.0 + (a / 100.0 if a > 0 else 100.0 / abs(a))
+
+def load_edges() -> pd.DataFrame:
+    df = read_csv_safe(EDGES_CSV)
+    if df.empty:
+        return df
+
+    df = df.copy()
+    # normalize columns
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    need = [
+        "ts", "sort_ts", "sport", "league", "season", "week", "market", "ref",
+        "side", "line", "odds", "p_win", "ev", "result", "stake", "parlay_stake",
+        "game_id"
+    ]
+    for c in need:
+        if c not in df.columns:
+            df[c] = None
+
+    # types
+    df["sort_ts"] = pd.to_datetime(df["ts"] if df["sort_ts"].isna().all() else df["sort_ts"], errors="coerce")
+    df["season"] = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+    df["week"] = pd.to_numeric(df["week"], errors="coerce").astype("Int64")
+    df["odds"] = pd.to_numeric(df["odds"], errors="coerce")
+    df["p_win"] = pd.to_numeric(df["p_win"], errors="coerce")
+    df["ev"] = pd.to_numeric(df["ev"], errors="coerce")
+    df["stake"] = pd.to_numeric(df["stake"], errors="coerce")
+    df["parlay_stake"] = pd.to_numeric(df["parlay_stake"], errors="coerce")
+    df["result"] = df["result"].astype(str).str.lower().where(df["result"].notna(), None)
+
+    return df
+
+def discover_seasons(df: pd.DataFrame) -> list[int]:
+    vals = sorted({int(x) for x in df["season"].dropna().unique().tolist()})
+    return vals
+
+def compute_row_profit(row: pd.Series, use_parlay_first: bool = True) -> Tuple[float, float]:
+    """
+    Returns (stake_used, profit_units) for a single row.
+    - stake_used: stake actually considered (parlay_stake > stake > 1.0 fallback)
+    - profit_units: +win profit, -lose stake, 0 for push/unknown
+    """
+    # which stake column to take
+    stake = None
+    if use_parlay_first and not pd.isna(row.get("parlay_stake")):
+        stake = float(row.get("parlay_stake"))
+    elif not pd.isna(row.get("stake")):
+        stake = float(row.get("stake"))
+    else:
+        stake = 1.0
+
+    if stake is None or stake <= 0:
+        stake = 1.0
+
+    # odds conversion
+    dec = am_to_dec(row.get("odds"))
+    result = str(row.get("result") or "").lower()
+
+    if dec is None or pd.isna(dec):
+        return stake, 0.0
+
+    if result == "win":
+        return stake, stake * (dec - 1.0)
+    if result == "lose":
+        return stake, -stake
+    if result == "push":
+        return stake, 0.0
+
+    # ungraded: do not affect PnL
+    return stake, 0.0
+
+def _parlay_key(df: pd.DataFrame) -> str | None:
+    for k in ("parlay_id", "slip_id", "ticket_id", "bet_id"):
+        if k in df.columns:
+            return k
+    return None
+
+def _combined_decimal_odds(group: pd.DataFrame) -> float | None:
+    decs = []
+    for _, r in group.iterrows():
+        d = am_to_dec(r.get("odds"))
+        if d is None or pd.isna(d):
+            return None
+        decs.append(float(d))
+    if not decs:
+        return None
+    prod = 1.0
+    for d in decs:
+        prod *= d
+    return prod
+
+def _parlay_result(group: pd.DataFrame) -> str:
+    # if any lose -> lose; else if any unknown -> unknown; else if any push -> push; else win
+    res = group["result"].astype(str).str.lower().fillna("")
+    if (res == "lose").any():
+        return "lose"
+    if (res == "win").all():
+        return "win"
+    # handle push / voids (no legs lost): treat as push for parlay
+    if (res == "push").any():
+        return "push"
+    return ""  # unknown/ungraded -> ignore PnL
+
+def legs_to_parlays(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse leg rows into one parlay row per parlay_id with combined odds and single stake."""
+    df = df.copy()
+    key = _parlay_key(df)
+    if key is None:
+        return pd.DataFrame()  # no parlay grouping present
+
+    groups = []
+    for pid, g in df.groupby(key, dropna=False):
+        # choose a stake for the parlay: prefer parlay_stake, else stake, else 1.0
+        pstake = pd.to_numeric(g.get("parlay_stake"), errors="coerce").dropna()
+        stake = float(pstake.iloc[0]) if not pstake.empty else float(pd.to_numeric(g.get("stake"), errors="coerce").dropna().iloc[0] if pd.to_numeric(g.get("stake"), errors="coerce").notna().any() else 1.0)
+
+        dec = _combined_decimal_odds(g)
+        result = _parlay_result(g)
+
+        # pick something representative for season/week/time
+        sort_ts = pd.to_datetime(g["sort_ts"], errors="coerce").min()
+        season  = pd.to_numeric(g["season"], errors="coerce").dropna().astype(int)
+        week    = pd.to_numeric(g["week"], errors="coerce").dropna().astype(int)
+        season  = int(season.iloc[0]) if not season.empty else None
+        week    = int(week.iloc[0]) if not week.empty else None
+
+        # store a single row for this parlay
+        groups.append(dict(
+            sort_ts=sort_ts,
+            season=season,
+            week=week,
+            market="PARLAY",
+            ref=str(pid),
+            odds=None,            # we keep leg odds separately; dec_comb below
+            dec_comb=dec,         # combined decimal odds (product of legs)
+            parlay_stake=stake,
+            result=result,
+            legs=len(g),
+        ))
+
+    out = pd.DataFrame(groups)
+    # align with the columns our page expects
+    if "stake" not in out.columns:
+        out["stake"] = None
+    if "p_win" not in out.columns:
+        out["p_win"] = None
+    if "ev" not in out.columns:
+        out["ev"] = None
+    out["ts"] = out["sort_ts"]
+    return out
+
+def compute_parlay_row_profit(row: pd.Series) -> tuple[float, float]:
+    """PnL for a single parlay row returned by legs_to_parlays()."""
+    stake = float(row.get("parlay_stake") or 1.0)
+    dec   = row.get("dec_comb")
+    res   = str(row.get("result") or "").lower()
+    if dec is None or pd.isna(dec):
+        return stake, 0.0
+    if res == "win":
+        return stake, stake * (float(dec) - 1.0)
+    if res == "lose":
+        return stake, -stake
+    if res == "push":
+        return stake, 0.0
+    return stake, 0.0
+
+# ==================
+# Analytics helpers
+# ==================
+def _pick_parlay_key_cols(df: pd.DataFrame) -> tuple[typing.Optional[str], typing.Optional[str]]:
+    # Return (parlay_id_col, result_col) if present, else (None, None)
+    if df is None or df.empty:
+        return None, None
+    key = None
+    for k in ("parlay_id","slip_id","ticket_id","bet_id"):
+        if k in df.columns:
+            key = k
+            break
+    res = "result" if "result" in df.columns else None
+    return key, res
+
+def build_near_misses(df: pd.DataFrame) -> pd.DataFrame:
+    # Return a table of parlays with exactly one losing leg (basic implementation).
+    key, res = _pick_parlay_key_cols(df)
+    if not key or not res:
+        return pd.DataFrame()
+    out = []
+    for pid, g in df.groupby(key, dropna=False):
+        res_col = g[res].astype(str).str.lower().fillna("")
+        loses = int((res_col == "lose").sum())
+        wins  = int((res_col == "win").sum())
+        total = int(len(g))
+        if total >= 2 and loses == 1 and wins >= 1:
+            first_ts = pd.to_datetime(g.get("sort_ts"), errors="coerce").min()
+            season   = pd.to_numeric(g.get("season"), errors="coerce").dropna().astype(int)
+            week     = pd.to_numeric(g.get("week"), errors="coerce").dropna().astype(int)
+            out.append(dict(
+                parlay_id=str(pid),
+                legs=total, lost_legs=loses, won_legs=wins,
+                season=(int(season.iloc[0]) if not season.empty else None),
+                week=(int(week.iloc[0]) if not week.empty else None),
+                sort_ts=first_ts
+            ))
+    if not out:
+        return pd.DataFrame()
+    return pd.DataFrame(out).sort_values("sort_ts", ascending=False, na_position="last")
+
+# --- Near-miss section (Backtest) --------------------------------------------
+st.markdown("### Near-miss parlays (exactly one leg lost)")
+show_near_table = st.checkbox("Show near-miss table", value=True, key="bk_show_near_table")
+
+near_df = pd.DataFrame()
+try:
+    # If your Backtest builds an intermediate `parlays_df`, pass that here.
+    # Otherwise, we try the same `work`/`bets_df` if they already include parlay rows.
+    source_df = None
+    for candidate in ("parlays_df", "work", "bets_df"):
+        if candidate in globals() and isinstance(globals()[candidate], pd.DataFrame):
+            source_df = globals()[candidate]
+            break
+    if source_df is not None and not source_df.empty:
+        near_df = build_near_misses(source_df)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Near-miss count", int(near_df.shape[0]) if not near_df.empty else 0)
+    with col2:
+        total_parlays = 0
+        key_col, res_col = _pick_parlay_key_cols(source_df) if source_df is not None else (None, None)
+        if key_col:
+            total_parlays = int(source_df.groupby(key_col).ngroups)
+        st.metric("Total parlays", total_parlays)
+    with col3:
+        rate = (near_df.shape[0] / total_parlays * 100.0) if total_parlays else 0.0
+        st.metric("Near-miss rate", f"{rate:.2f}%")
+
+    if show_near_table and not near_df.empty:
+        st.dataframe(near_df, use_container_width=True, height=340)
+
+    if not near_df.empty:
+        csv = near_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download near_misses.csv", csv, "near_misses.csv", "text/csv")
+    else:
+        st.caption("No near-miss parlays found (or parlay grouping/result columns missing).")
+except Exception as _e:
+    st.caption("Near-miss view unavailable (data not grouped by parlay).")
+
+def equity_curve(work: pd.DataFrame, starting_bankroll: float = 100.0, use_parlay_first: bool = True) -> pd.DataFrame:
+    if work.empty:
+        return pd.DataFrame({"ts": [], "equity": []})
+    W = work.sort_values("sort_ts", ascending=True, na_position="last").copy()
+    running = float(starting_bankroll)
+    eq = []
+    for _, r in W.iterrows():
+        stake, pnl = compute_row_profit(r, use_parlay_first=use_parlay_first)
+        running += pnl
+        eq.append(running)
+    return pd.DataFrame({"ts": W["sort_ts"].values, "equity": eq})
+
+def max_drawdown(equity_series: Iterable[float]) -> Tuple[float, float, float]:
+    """
+    Returns (max_drawdown, peak, trough) in units.
+    """
+    max_dd = 0.0
+    peak = -np.inf
+    trough = -np.inf
+    run_peak = -np.inf
+    for v in equity_series:
+        run_peak = max(run_peak, v)
+        dd = run_peak - v
+        if dd > max_dd:
+            max_dd = dd
+            peak = run_peak
+            trough = v
+    return float(max_dd), float(peak if peak != -np.inf else 0.0), float(trough if trough != -np.inf else 0.0)
+
+def summarize(work: pd.DataFrame, use_parlay_first: bool = True, is_parlay_mode: bool = False) -> dict:
+    # Guard: empty or None -> all zeros
+    if work is None or len(work) == 0:
+        return dict(
+            total_bets=0, wins=0, losses=0, pushes=0,
+            win_pct=0.0, avg_ev=np.nan,
+            total_stake=0.0, total_profit=0.0, roi=0.0,
+            max_drawdown=0.0, peak_equity=0.0, final_equity=0.0,
+        )
+
+    # Ensure columns exist
+    if "result" not in work.columns:
+        work = work.assign(result=np.nan)
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+    if "sort_ts" not in work.columns:
+        work = work.assign(sort_ts=pd.NaT)
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+
+    # Normalize result labels
+    res = work["result"].astype(str).str.lower()
+
+    total_bets = len(work)
+    wins   = int((res == "win").sum())
+    losses = int((res == "lose").sum())
+    pushes = int((res == "push").sum())
+
+    stakes, profits = [], []
+    for _, r in work.iterrows():
+        if is_parlay_mode:
+            s, p = compute_parlay_row_profit(r)
+        else:
+            s, p = compute_row_profit(r, use_parlay_first=use_parlay_first)
+        stakes.append(float(s)); profits.append(float(p))
+
+    total_stake  = float(sum(stakes)) if stakes else 0.0
+    total_profit = float(sum(profits)) if profits else 0.0
+    win_pct = (wins / total_bets) if total_bets else 0.0
+    roi     = (total_profit / total_stake) if total_stake > 0 else 0.0
+    avg_ev  = float(pd.to_numeric(work.get("ev"), errors="coerce").dropna().mean()) if "ev" in work.columns else np.nan
+
+    # Equity metrics (units)
+    eq = equity_curve(work, starting_bankroll=0.0, use_parlay_first=use_parlay_first)
+    max_dd, peak_eq, final_eq = 0.0, 0.0, 0.0
+    if not eq.empty:
+        md, pk, _ = max_drawdown(eq["equity"].tolist())
+        max_dd, peak_eq = float(md), float(pk)
+        final_eq = float(eq["equity"].iloc[-1])
+
+    return dict(
+        total_bets=total_bets, wins=wins, losses=losses, pushes=pushes,
+        win_pct=win_pct, avg_ev=avg_ev,
+        total_stake=total_stake, total_profit=total_profit, roi=roi,
+        max_drawdown=max_dd, peak_equity=peak_eq, final_equity=final_eq,
+    )
+
+
+# ==========
+# UI layout
+# ==========
+st.title("Backtest")
+
+edges = load_edges()
+if edges.empty:
+    st.info("No edges found in exports/edges.csv")
+    st.stop()
+with st.expander("Data source & seasons (debug)"):
+    st.write("EDGES_CSV:", str(EDGES_CSV))
+    if not edges.empty:
+        seasons_seen = sorted(pd.to_numeric(edges["season"], errors="coerce").dropna().astype(int).unique().tolist())
+        st.write(f"Seasons detected ({len(seasons_seen)}):", seasons_seen[:25], "…" if len(seasons_seen) > 25 else "")
+    else:
+        st.warning("No rows loaded.")
+
+# --- EF data sources ----------------------------------------------------------
+# Keep your edges loader
+edges = load_edges()
+if edges.empty:
+    st.info("No edges found in exports/edges.csv")
+    st.stop()
+
+# Allow overrides via env/session; fall back to common exports paths
+scores_path = Path(st.session_state.get("scores_path", "exports/games.csv"))
+if not scores_path.exists():
+    # try an alternate common name
+    alt = Path("exports/scores.csv")
+    if alt.exists(): scores_path = alt
+
+plays_path = Path(st.session_state.get("plays_path", "exports/plays.csv"))
+
+scores_df = load_scores_csv(scores_path)
+plays_df  = load_plays_csv(plays_path)
+
+with st.expander("Data source & seasons (debug)"):
+    st.write("EDGES_CSV:", str(EDGES_CSV))
+    st.write("SCORES_CSV:", str(scores_path))
+    st.write("PLAYS_CSV:",  str(plays_path))
+    if not edges.empty:
+        seasons_seen_edges = sorted(pd.to_numeric(edges["season"], errors="coerce").dropna().astype(int).unique().tolist())
+        st.write(f"Edges seasons ({len(seasons_seen_edges)}):", seasons_seen_edges[:25], "…" if len(seasons_seen_edges) > 25 else "")
+    if not scores_df.empty:
+        seasons_seen_scores = seasons_from_scores(scores_df)
+        st.write(f"Scores seasons ({len(seasons_seen_scores)}):", seasons_seen_scores)
+
+# File banners
+banner_file_status(scores_path, "Scores")
+if plays_df.empty:
+    st.info("Plays (optional) not found/populated; backtest will run without player metrics.")
+
+# --- EF: season/week pickers use SCORES as truth -----------------------------
+avail_seasons = seasons_from_scores(scores_df) or [MIN_SEASON]
+max_season = max(avail_seasons) if avail_seasons else MIN_SEASON
+st.caption(f"Data window (from scores): **{MIN_SEASON}–{max_season}**")
+# after: avail_seasons = seasons_from_scores(scores_df) or [MIN_SEASON]
+if not scores_df.empty:
+    data_window_note = f"{MIN_SEASON}–{max(avail_seasons)}"
+else:
+    # fallback to edges if scores are missing/empty
+    avail_seasons = discover_seasons(edges)
+    avail_seasons = [s for s in avail_seasons if s >= MIN_SEASON] or [MIN_SEASON]
+    data_window_note = f"{MIN_SEASON}–{max(avail_seasons)} (from edges fallback)"
+st.caption(f"Data window: **{data_window_note}**")
+
+# ---- session defaults (only once) ----
+st.session_state.setdefault("bk_start_bankroll", 100.0)
+st.session_state.setdefault("bk_newest_first", True)
+st.session_state.setdefault("bk_weeks", [])
+st.session_state.setdefault("bk_use_parlay_first", True)
+st.session_state.setdefault("bk_mode_parlay", False)
+
+# ---- render Parlay mode toggle ONCE ----
+st.toggle("Parlay mode", value=st.session_state["bk_mode_parlay"], key="bk_mode_parlay")
+
+colA, colB, colC, colD = st.columns([2.2, 2.8, 1.2, 1.6])
+
+with colA:
+    st.caption("Seasons (scores-driven)")
+    season_labels = ["All"] + [str(s) for s in avail_seasons]
+    selected = st.multiselect("Select seasons", season_labels, default=["All"], label_visibility="collapsed")
+    selected_seasons = avail_seasons if ("All" in selected or not selected) else [int(s) for s in selected]
+
+with colB:
+    st.caption("Weeks (1–22)")
+    wk_opts = weeks_from_scores(scores_df, selected_seasons)
+    weeks_pick = st.multiselect("Select weeks", wk_opts, default=wk_opts, label_visibility="collapsed")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("All weeks", use_container_width=True):
+            weeks_pick = wk_opts
+    with c2:
+        if st.button("Clear weeks", use_container_width=True):
+            weeks_pick = []
+    st.session_state["bk_weeks"] = weeks_pick
+
+with colC:
+    st.caption("Starting bankroll (units)")
+    st.session_state["bk_start_bankroll"] = st.number_input(
+        "Starting bankroll", min_value=0.0, value=float(st.session_state["bk_start_bankroll"]),
+        step=10.0, label_visibility="collapsed"
+    )
+    st.checkbox("Use parlay stake first", value=st.session_state["bk_use_parlay_first"],
+                key="bk_use_parlay_first")
+
+with colD:
+    st.caption("Newest first")
+    st.toggle("Newest first", value=st.session_state["bk_newest_first"], key="bk_newest_first",
+              label_visibility="collapsed")
+    run_bt = st.button("Run Backtest", use_container_width=True)
+
+# If you want an 'All 2017–max' quick button:
+if st.button(f"All {MIN_SEASON}–{max_season}"):
+    try:
+        st.session_state["bk_weeks"] = wk_opts
+        st.rerun()
+    except Exception:
+        st.rerun()
+
+with st.expander("Diagnostics / ETL (optional)"):
+    st.caption("Wire a CLI ETL or debugging widgets here if needed.")
+
+# --- EF filtering & 2017+ enforcement ----------------------------------------
+base = edges.copy()
+
+# Settle edges from scores if you later implement grading
+base = settle_edges_from_scores_if_needed(base, scores_df)
+
+# Filter by seasons/weeks from the pickers
+if selected_seasons:
+    base = base[base["season"].isin(selected_seasons)]
+if st.session_state["bk_weeks"]:
+    base = base[base["week"].isin(st.session_state["bk_weeks"])]
+
+# Enforce 2017+ regardless of what edges contain
+if "season" in base.columns:
+    before, base = len(base), base[pd.to_numeric(base["season"], errors="coerce").fillna(0) >= MIN_SEASON]
+    after = len(base)
+    if before != after:
+        st.caption(f"Backtest trimmed to **{MIN_SEASON}+** (rows: {after:,}/{before:,}).")
+
+# Collapse to parlays if requested
+if st.session_state["bk_mode_parlay"]:
+    P = legs_to_parlays(base)
+    work = P if not P.empty else pd.DataFrame(columns=["sort_ts","result","stake","parlay_stake","ev"])
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+    if P.empty:
+        st.warning("Parlay mode is on but no grouping column (parlay_id/slip_id/ticket_id/bet_id) was found.", icon="⚠️")
+else:
+    work = base
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+# -- right before you compute eq / do any sorting or grouping --
+work = ensure_sort_ts(work)
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+
+# respect UI state but be defensive
+_parlay_mode = bool(st.session_state.get("bk_mode_parlay", False))
+work, group_col, _parlay_mode = ensure_parlay_grouping(work, _parlay_mode)
+
+if bool(st.session_state.get("bk_mode_parlay", False)) and group_col is None:
+    st.warning("Parlay mode was ON but no grouping column was found; turning it off for this run.")
+    _parlay_mode = False
+
+# now your old line will be safe:
+eq = (
+\#\ ====\ \[PATCH]\ sort_ts\ fallback\ ====\ntry:\n\ \ \ \ _needs_sort_ts_guard\ =\ 'sort_ts'\ not\ in\ work\.columns\nexcept\ Exception:\n\ \ \ \ _needs_sort_ts_guard\ =\ False\n\nif\ _needs_sort_ts_guard:\n\ \ \ \ if\ 'ts'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['ts'],\ errors='coerce'\)\n\ \ \ \ elif\ 'game_time'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['game_time'],\ errors='coerce'\)\n\ \ \ \ else:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.Timestamp\.utcnow\(\)\n\#\ ====\ \[END\ PATCH]\ ====
+    work.sort_values("sort_ts")
+    # .assign(... whatever you had ...)
+)
+
+# Ensure we have a sortable timestamp
+if "sort_ts" not in work.columns:
+    ts_cols = [c for c in ["sort_ts", "ts", "start_time", "commence_time", "event_time", "date", "datetime"]
+               if c in work.columns]
+    if ts_cols:
+        work["sort_ts"] = pd.to_datetime(work[ts_cols[0]], errors="coerce", utc=True)
+    else:
+        work["sort_ts"] = pd.NaT
+
+work = work.sort_values(
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+    "sort_ts",
+    ascending=not st.session_state.get("bk_newest_first", True),
+    na_position="last"
+)
+
+if not run_bt:
+    st.info("Adjust filters, then press **Run Backtest**.")
+    st.stop()
+
+# Recompute work if needed (keeps logic simple)
+is_parlay = st.session_state["bk_mode_parlay"]
+work = legs_to_parlays(base) if is_parlay else base
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+
+# Summary metrics
+stats = summarize(work, use_parlay_first=st.session_state["bk_use_parlay_first"], is_parlay_mode=is_parlay)
+
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+with m1:
+    st.metric("Total Bets", f"{stats['total_bets']:,}")
+with m2:
+    st.metric("Wins / Losses / Pushes", f"{stats['wins']:,} / {stats['losses']:,} / {stats['pushes']:,}")
+with m3:
+    st.metric("Win %", f"{(stats['win_pct']*100):.1f}%")
+with m4:
+    st.metric("Avg EV", "-" if np.isnan(stats["avg_ev"]) else f"{stats['avg_ev']:.3f}")
+with m5:
+    st.metric("Stake Σ (units)", f"{stats['total_stake']:.2f}")
+with m6:
+    st.metric("Profit (units)", f"{stats['total_profit']:.2f}")
+
+m7, m8, m9 = st.columns(3)
+with m7:
+    st.metric("ROI", f"{(stats['roi']*100):.2f}%")
+with m8:
+    st.metric("Max Drawdown (units)", f"{stats['max_drawdown']:.2f}")
+with m9:
+    st.metric("Final Equity (units)", f"{stats['final_equity'] + float(st.session_state['bk_start_bankroll']):.2f}")
+
+# work has been assembled at this point
+work = ensure_sort_ts(work)
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+
+_parlay_mode_ui = bool(st.session_state.get("bk_mode_parlay", False))
+work, group_col, _parlay_mode = ensure_parlay_grouping(work, _parlay_mode_ui)
+
+# If user toggled parlay ON but no real grouping exists, warn and turn it off for this run
+if _parlay_mode_ui and group_col is None:
+    st.warning("Parlay mode is on but no grouping column (parlay_id/slip_id/ticket_id/bet_id) was found; turning it off for this run.")
+    _parlay_mode = False
+
+# If nothing to plot, bail out cleanly
+if work is None or work.empty:
+    st.info("No plays found in the chosen window/filters.")
+else:
+    if "sort_ts" not in work.columns:
+        # show quick debug so you can see what the DataFrame actually has
+        st.error("No sortable time field found; cannot compute equity curve.")
+        st.caption(f"Available columns: {sorted(list(work.columns))}")
+    else:
+        # your original computation now becomes safe
+        eq = (
+\#\ ====\ \[PATCH]\ sort_ts\ fallback\ ====\ntry:\n\ \ \ \ _needs_sort_ts_guard\ =\ 'sort_ts'\ not\ in\ work\.columns\nexcept\ Exception:\n\ \ \ \ _needs_sort_ts_guard\ =\ False\n\nif\ _needs_sort_ts_guard:\n\ \ \ \ if\ 'ts'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['ts'],\ errors='coerce'\)\n\ \ \ \ elif\ 'game_time'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['game_time'],\ errors='coerce'\)\n\ \ \ \ else:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.Timestamp\.utcnow\(\)\n\#\ ====\ \[END\ PATCH]\ ====
+            work.sort_values("sort_ts")
+            # .assign(... your existing assignments ...)
+        )
+        # continue with plotting / KPIs...
+
+# Equity curve (units)
+st.subheader("Equity curve")
+\#\ ====\ \[PATCH]\ sort_ts\ fallback\ ====\ntry:\n\ \ \ \ _needs_sort_ts_guard\ =\ 'sort_ts'\ not\ in\ work\.columns\nexcept\ Exception:\n\ \ \ \ _needs_sort_ts_guard\ =\ False\n\nif\ _needs_sort_ts_guard:\n\ \ \ \ if\ 'ts'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['ts'],\ errors='coerce'\)\n\ \ \ \ elif\ 'game_time'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['game_time'],\ errors='coerce'\)\n\ \ \ \ else:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.Timestamp\.utcnow\(\)\n\#\ ====\ \[END\ PATCH]\ ====
+eq = (work.sort_values("sort_ts").assign(
+        __pnl = [
+            (compute_parlay_row_profit(r)[1] if st.session_state["bk_mode_parlay"]
+             else compute_row_profit(r, use_parlay_first=st.session_state["bk_use_parlay_first"])[1])
+            for _, r in work.iterrows()
+        ]
+     ))
+running = float(st.session_state["bk_start_bankroll"])
+equity = []
+for v in eq["__pnl"]:
+    running += float(v)
+    equity.append(running)
+\#\ ====\ \[PATCH]\ sort_ts\ fallback\ ====\ntry:\n\ \ \ \ _needs_sort_ts_guard\ =\ 'sort_ts'\ not\ in\ work\.columns\nexcept\ Exception:\n\ \ \ \ _needs_sort_ts_guard\ =\ False\n\nif\ _needs_sort_ts_guard:\n\ \ \ \ if\ 'ts'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['ts'],\ errors='coerce'\)\n\ \ \ \ elif\ 'game_time'\ in\ work\.columns:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.to_datetime\(work\['game_time'],\ errors='coerce'\)\n\ \ \ \ else:\n\ \ \ \ \ \ \ \ work\['sort_ts']\ =\ pd\.Timestamp\.utcnow\(\)\n\#\ ====\ \[END\ PATCH]\ ====
+eq = pd.DataFrame({"ts": work.sort_values("sort_ts")["sort_ts"].values, "equity": equity})
+
+# Edges preview + download
+st.subheader("Edges preview")
+st.dataframe(work, use_container_width=True, hide_index=True, height=420)
+
+csv = work.to_csv(index=False).encode("utf-8-sig")
+st.download_button("Download filtered picks.csv", data=csv, file_name="filtered_picks.csv", mime="text/csv")
+
+# --- EF PATCH: parlay guard + safe sort_ts ---
+# If parlay mode is on but no parlay grouping column exists, warn (and continue with singles).
+try:
+    _has_work_df = isinstance(work, pd.DataFrame)  # noqa: F821
+except NameError:
+    _has_work_df = False
+
+if st.session_state.get("bk_mode_parlay", False) and _has_work_df:
+    if not any(col in work.columns for col in ("parlay_id","slip_id","ticket_id","bet_id")):
+        st.warning("Parlay mode is on but no grouping column (parlay_id/slip_id/ticket_id) was found. Showing empty set.", icon="⚠️")
+
+# Ensure we have a sortable timestamp
+if _has_work_df:
+    if "sort_ts" not in work.columns:
+        ts_cols = [c for c in ["sort_ts","ts","start_time","commence_time","event_time","date","datetime"] if c in work.columns]
+        if ts_cols:
+            work["sort_ts"] = pd.to_datetime(work[ts_cols[0]], errors="coerce", utc=True)
+        else:
+            work["sort_ts"] = pd.NaT
+
+work = work.sort_values(
+\#\ ====\ \[PATCH]\ Parlay\ mode\ /\ grouping\ guard\ ====\ntry:\n\ \ \ \ bk_mode_parlay\ =\ st\.session_state\.get\("bk_mode_parlay",\ False\)\nexcept\ Exception:\n\ \ \ \ bk_mode_parlay\ =\ False\n\ntry:\n\ \ \ \ PREFERRED_GROUP_COLS\ \ \#\ from\ step\ 1\ helper\nexcept\ NameError:\n\ \ \ \ PREFERRED_GROUP_COLS\ =\ \["parlay_id",\ "slip_id",\ "ticket_id",\ "bet_id"]\n\ngroup_col\ =\ next\(\(c\ for\ c\ in\ PREFERRED_GROUP_COLS\ if\ c\ in\ work\.columns\),\ None\)\n\nif\ bk_mode_parlay:\n\ \ \ \ if\ group_col\ is\ None:\n\ \ \ \ \ \ \ \ try:\n\ \ \ \ \ \ \ \ \ \ \ \ work,\ group_col,\ _note\ =\ ensure_grouping_column\(work,\ want_parlay=True\)\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ st\.info\(_note\)\ \ \#\ optional\n\ \ \ \ \ \ \ \ except\ NameError:\n\ \ \ \ \ \ \ \ \ \ \ \ \#\ ensure_grouping_column\ not\ present;\ parlay\ will\ be\ disabled\ downstream\n\ \ \ \ \ \ \ \ \ \ \ \ pass\nelse:\n\ \ \ \ group_col\ =\ None\n\#\ ====\ \[END\ PATCH]\ ====
+    "sort_ts",
+    ascending=not st.session_state.get("bk_newest_first", True),
+    na_position="last"
+)
+# --- END EF PATCH ---
+

@@ -1,0 +1,48 @@
+import pandas as pd
+from pathlib import Path
+import streamlit as st
+
+from serving_ui.app._layout import header
+
+header("Alerts")
+
+def _find_edges_csv():
+    here = Path(__file__).resolve()
+    root = here.parents[2]
+    for p in [root/"exports/edges.csv", root/"data_scaffnew/exports/edges.csv"]:
+        if p.exists() and p.stat().st_size > 0: return p
+    return None
+
+p = _find_edges_csv()
+if not p:
+    st.warning("edges.csv not found.")
+    st.stop()
+
+df = pd.read_csv(p)
+df.columns = [c.strip().lower() for c in df.columns]
+
+def implied_pp(odds:int)->float:
+    dec = 1 + (odds/100.0 if odds>0 else 100.0/abs(odds)); return 1.0/dec
+
+if {"odds","model_p"}.issubset(df.columns):
+    df["ev_pp"] = (df["model_p"] - df["odds"].astype(int).map(implied_pp))*100.0
+
+st.subheader("Threshnew")
+thr = st.number_input("Alert when +EV â‰¥ (pp)", value=3.0, step=0.5)
+to_alert = df[df.get("ev_pp", 0) >= thr].copy()
+
+st.write(f"Matches: {len(to_alert):,}")
+if not to_alert.empty:
+    root = Path(__file__).resolve().parents[2]
+    out = root/"exports"/"alerts.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    to_alert.to_csv(out, index=False)
+    st.success(f"Saved: {out}")
+    st.download_button("Download alerts.csv", data=to_alert.to_csv(index=False).encode(), file_name="alerts.csv", mime="text/csv")
+else:
+    st.info("No rows meet the threshnew.")
+
+
+
+
+

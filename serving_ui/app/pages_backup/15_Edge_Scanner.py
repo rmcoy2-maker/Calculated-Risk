@@ -1,0 +1,122 @@
+from pathlib import Path
+import sys, subprocess
+import streamlit as st
+import pandas as pd
+REPO = Path(__file__).resolve().parents[2]
+EXPORTS = REPO / 'exports'
+EXPORTS.mkdir(parents=True, exist_ok=True)
+EDGES_CSV = EXPORTS / 'edges.csv'
+ODDS_CSV = REPO / 'db' / 'odds_books.csv'
+SCAN_CANDIDATES = [REPO / 'serving' / 'scan_edges.py', REPO / 'serving_ui' / 'serving' / 'scan_edges.py']
+SCAN_PY = next((p for p in SCAN_CANDIDATES if p.exists()), SCAN_CANDIDATES[0])
+
+def american_to_prob(odds):
+    try:
+        o = float(str(odds).replace('+', ''))
+    except Exception:
+        return None
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    if o < 0:
+        return abs(o) / (abs(o) + 100.0)
+    return None
+
+def ev_per_dollar(p_win, odds):
+    try:
+        o = int(odds)
+    except Exception:
+        return None
+    if o >= 100:
+        payoff = o / 100.0
+    elif o <= -100:
+        payoff = 100.0 / abs(o)
+    else:
+        return None
+    try:
+        return float(p_win) * payoff - (1.0 - float(p_win))
+    except Exception:
+        return None
+
+def ensure_ev(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if 'p_win' not in out.columns:
+        out['p_win'] = out['odds'].map(american_to_prob) if 'odds' in out.columns else None
+    if 'EV' not in out.columns:
+        out['EV'] = out.apply(lambda r: ev_per_dollar(r['p_win'], r['odds']) if pd.notna(r.get('p_win')) and pd.notna(r.get('odds')) else None, axis=1)
+    return out
+st.set_page_config(page_title='Edge Scanner', layout='wide')
+st.title('ðŸ§² Edge Scanner')
+a, b, c = st.columns([1, 1, 2])
+with a:
+    if st.button('ðŸ“\x9d Write sample edges.csv'):
+        from datetime import date
+        today = date.today().strftime('%Y-%m-%d')
+        sample = f'game_id,market,side,book,odds,p_win\n{today}-NE@NYJ,Moneyline,NE,DK,-120,0.545\n{today}-GB@CHI,ML,GB,FD,+135,0.43\n{today}-KC@BUF,Moneyline,KC,MGM,-110,0.525\n{today}-DAL@PHI,ML,PHI,PN,+120,0.48\n'
+        EDGES_CSV.write_text(sample, encoding='utf-8')
+        st.success(f'Wrote {EDGES_CSV}')
+        st.rerun()
+with b:
+    if st.button('ðŸ”Ž Run scan (if script present)'):
+        if not SCAN_PY.exists():
+            st.error(f'Scanner not found: {SCAN_PY}')
+        else:
+            try:
+                cp = subprocess.run([sys.executable, str(SCAN_PY)], cwd=str(REPO), capture_output=True, text=True, check=True)
+                st.success('Scan complete.')
+                if cp.stdout:
+                    st.code(cp.stdout[-4000:])
+                if cp.stderr:
+                    st.warning(cp.stderr[-2000:])
+            except subprocess.CalledProcessError as e:
+                st.error('Scan failed.')
+                st.code((e.stdout or '') + '\n' + (e.stderr or ''))
+            st.rerun()
+with c:
+    st.caption(f'Repo: {REPO}')
+    st.caption(f'edges.csv: {EDGES_CSV}')
+st.divider()
+if not EDGES_CSV.exists() or EDGES_CSV.stat().st_size < 10:
+    st.info("No edges yet. Click 'Write sample edges.csv' or run your scanner.")
+else:
+    try:
+        df = pd.read_csv(EDGES_CSV)
+    except Exception as e:
+        st.error(f'Could not read {EDGES_CSV}: {e}')
+    else:
+        if df.empty:
+            st.warning('edges.csv contains no rows.')
+        else:
+            df = ensure_ev(df)
+            st.subheader('Ranked by EV')
+            c1, c2, c3 = st.columns(3)
+            min_ev = c1.number_input('Min EV ($/$1)', -1.0, 5.0, 0.02, 0.01)
+            min_p = c2.slider('Min p_win', 0.0, 1.0, 0.5, 0.01)
+            book = c3.text_input('Filter by book', '')
+            view = df.copy()
+            if book.strip() and 'book' in view.columns:
+                view = view[view['book'].astype(str).str.contains(book.strip(), case=False, na=False)]
+            if 'EV' not in view.columns:
+                view['EV'] = None
+            if 'p_win' not in view.columns:
+                view['p_win'] = None
+            view = view[(view['EV'].fillna(-999) >= float(min_ev)) & (view['p_win'].fillna(0.0) >= float(min_p))]
+            if view.empty:
+                st.warning('No rows meet filters.')
+            else:
+                st.dataframe(view.sort_values('EV', ascending=False), width='stretch')
+                st.download_button('â¬‡ï¸\x8f Download filtered edges.csv', data=view.to_csv(index=False).encode('utf-8'), file_name='edges_filtered.csv', mime='text/csv')
+with st.expander('âš™ï¸\x8f Diagnostics'):
+
+    def _size(p: Path):
+        try:
+            return p.stat().st_size
+        except Exception:
+            return 0
+    st.write('REPO:', REPO)
+    st.write('EDGES_CSV exists:', EDGES_CSV.exists(), 'size:', _size(EDGES_CSV))
+    if EDGES_CSV.exists():
+        try:
+            head = pd.read_csv(EDGES_CSV, nrows=5)
+            st.dataframe(head, width='stretch')
+        except Exception as e:
+            st.error(f'Read head failed: {e}')

@@ -1,0 +1,35 @@
+from app.bootstrap import bootstrap_paths
+bootstrap_paths()
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from pathlib import Path
+import streamlit as st
+st.set_page_config(page_title='Error Dashboard', layout='wide')
+st.title('ðŸš¨ Error Dashboard')
+ROOT = Path(__file__).resolve().parents[2]
+LOGFILE = ROOT / 'exports' / 'errors.log'
+colA, colB = st.columns([2, 1])
+with colA:
+    st.write('Log file:', LOGFILE)
+with colB:
+    if st.button('ðŸ§¹ Clear log'):
+        LOGFILE.write_text('', encoding='utf-8')
+        st.success('Cleared.')
+        st.rerun()
+if not LOGFILE.exists() or LOGFILE.stat().st_size == 0:
+    st.success('âœ… No errors logged yet.')
+else:
+    st.download_button('â¬‡ï¸\x8f Download errors.log', LOGFILE.read_bytes(), file_name='errors.log')
+    st.text_area('Errors', LOGFILE.read_text(encoding='utf-8'), height=600)

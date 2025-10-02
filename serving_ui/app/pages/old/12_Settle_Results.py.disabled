@@ -1,0 +1,4 @@
+﻿import streamlit as st
+st.set_page_config(page_title="Settle Results", page_icon="⚖️", layout="wide")
+st.title("Settle Results (stub)")
+st.caption("Map outcomes to bets_log.csv and compute P/L.")

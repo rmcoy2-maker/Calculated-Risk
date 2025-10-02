@@ -1,0 +1,25 @@
+import sys, platform
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="Diagnostics", page_icon="ðŸ› ï¸", layout="wide")
+st.title("Diagnostics")
+
+root = Path(__file__).resolve().parents[2]
+st.write({"python": sys.version.split()[0], "platform": platform.platform()})
+st.write({"root": str(root), "db": str(root/"db"), "exports": str(root/"exports")})
+
+with st.expander("Exports Preview", expanded=True):
+    for name in ["bets_log.csv","parlays.csv","edges.csv"]:
+        p = root/"exports"/name
+        st.write(f"â€¢ {name}: {'exists' if p.exists() else 'missing'}")
+        if p.exists():
+            try:
+                st.dataframe(pd.read_csv(p).head(20), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.warning(f"Failed to read {name}: {e}")
+
+
+
+

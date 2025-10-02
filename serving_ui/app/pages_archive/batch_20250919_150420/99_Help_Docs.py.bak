@@ -1,0 +1,36 @@
+import streamlit as st
+from serving_ui.app._layout import header
+
+header("Help & Docs")
+
+st.markdown("""
+## Quick Start
+1. Run your edge scanner to populate **exports/edges.csv**.
+2. Open **All Picks Explorer** â†’ filter & pick bets.
+3. Use **Bet Slip** to log bets (auto-tags model version).
+4. **Settle Results** manually or via **Results Reconciler (CSV)**.
+5. Review performance in **Portfolio** and **Risk Analytics**.
+
+## Key Concepts
+- **model_p**: Your model win probability (0â€“1).
+- **+EV (pp)**: model_p âˆ’ implied probability from odds, in percentage points.
+- **CLV**: Î” implied probability from open to close.
+- **Bankroll / Kelly**: Stake sizing cues with safety cap.
+
+## Where files live
+- Inputs: `exports/edges.csv`
+- Bet log: `exports/bets_log.csv`
+- Alerts: `exports/alerts.csv`
+
+## Pages
+- Explorer, Bet Slip, Import, Settle/Recon, Portfolio, Risk, Calibration, A/B Compare, Closing Line Updater, Diagnostics.
+
+## Tips
+- Keep `model_p` in [0,1]; odds within Â±10,000.
+- Bump `MODEL_VERSION` in `app/lib/config.py` when you deploy a new model.
+""")
+
+
+
+
+

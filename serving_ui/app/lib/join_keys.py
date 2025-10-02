@@ -1,0 +1,28 @@
+from __future__ import annotations
+import pandas as pd
+
+def _as_str(s: pd.Series) -> pd.Series:
+    return s.astype('string').fillna('')
+
+def add_join_keys(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds common join keys used throughout the app:
+      - _key_date  : yyyy-mm-dd from _date_iso
+      - _key_home  : _key_date|_home_nick
+      - _key_away  : _key_date|_away_nick
+      - _key_game  : _key_home@_away_nick
+    Ensures required columns exist (filled with "").
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    d = df.copy()
+    for col in ['_home_nick', '_away_nick', '_date_iso', '_market_norm', 'side_norm']:
+        if col not in d.columns:
+            d[col] = ''
+    for col in ['_home_nick', '_away_nick', '_date_iso']:
+        d[col] = _as_str(d[col])
+    d['_key_date'] = d['_date_iso'].str.slice(0, 10)
+    d['_key_home'] = d['_key_date'] + '|' + _as_str(d['_home_nick'])
+    d['_key_away'] = d['_key_date'] + '|' + _as_str(d['_away_nick'])
+    d['_key_game'] = d['_key_home'] + '@' + _as_str(d['_away_nick'])
+    return d

@@ -1,0 +1,591 @@
+from __future__ import annotations
+
+def _ensure_total_profit(df):
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+
+# ---------- loader import shim ----------
+import os, sys
+_HERE = os.path.dirname(__file__)
+_APP_ROOT = os.path.abspath(os.path.join(_HERE, ".."))  # pages -> app
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
+try:
+    # Preferred (when run via Streamlit app root)
+    from util.loader_scores import load_edges_or_scores
+except Exception:
+    # Fallback when executed from project root
+    _ALT_ROOT = os.path.abspath(os.path.join(_APP_ROOT, ".."))
+    if _ALT_ROOT not in sys.path:
+        sys.path.insert(0, _ALT_ROOT)
+    from app.util.loader_scores import load_edges_or_scores
+# ---------------------------------------
+
+import re
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+from pathlib import Path
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+from typing import Iterable, Optional, Tuple
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+
+import numpy as np
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+import pandas as pd
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+import streamlit as st
+    # prefer an existing 'profit' column; else try 'pnl' or create zeros
+    col = 'profit' if 'profit' in df.columns else ('pnl' if 'pnl' in df.columns else None)
+    if col is None:
+        df = df.assign(profit=0.0)
+        col = 'profit'
+    # make sure numeric
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if 'total_profit' not in df.columns:
+        df = df.assign(total_profit=df[col].cumsum())
+    else:
+        df['total_profit'] = pd.to_numeric(df['total_profit'], errors='coerce')
+        if df['total_profit'].isna().any():
+            df['total_profit'] = df[col].cumsum()
+    return df
+# ------------------------ Page Config ------------------------
+MAX_LEGS_PER_SLIP = 6
+MIN_SEASON = 1999
+PARLAY_GROUP_CANDIDATES = ["slip_id", "parlay_id", "ticket_id", "bet_id", "wager_id", "group_id"]
+TS_CANDIDATES = [
+    "sort_ts", "ts", "placed_at", "event_ts", "game_ts", "kickoff", "datetime", "date", "start_time", "scheduled"
+]
+
+PHASE_PRESEASON = "preseason"
+PHASE_REGULAR   = "regular"
+PHASE_POST      = "postseason"
+PHASE_HOF       = "hof"
+PHASE_BYE       = "bye"
+PHASE_CANCEL    = "cancelled"
+PHASE_UNKNOWN   = "unknown"
+WEEK_RX = re.compile(r"\bweek\s*(\d+)\b", flags=re.I)
+
+
+# ------------------------ FS Helpers ------------------------
+def _find_edges_csv() -> Path:
+    env = os.environ.get("EDGES_CSV")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+    here = Path(__file__).resolve()
+    for base in [here.parent, *here.parents]:
+        candidate = base / "exports" / "edges.csv"
+        if candidate.exists():
+            return candidate
+    return here.parents[3] / "exports" / "edges.csv"
+
+EDGES_CSV = _find_edges_csv()
+
+def read_csv_safe(path: Path | str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return pd.DataFrame()
+    for kw in ({"encoding": "utf-8-sig"}, {}, {"engine": "python"}):
+        try:
+            return pd.read_csv(p, **kw)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+# ------------------------ Normalization ------------------------
+def normalize_week_label(label: str) -> tuple[Optional[int], str]:
+    if label is None:
+        return None, PHASE_UNKNOWN
+    s = str(label).strip()
+    u = s.upper()
+    if u.startswith("BYE"): return None, PHASE_BYE
+    if "CANCEL" in u: return None, PHASE_CANCEL
+    if "HALL" in u: return 0, PHASE_HOF
+    if "PRESEASON" in u:
+        m = WEEK_RX.search(s); return (int(m.group(1)) if m else None), PHASE_PRESEASON
+    if any(k in u for k in ["WILD", "DIVIS", "CONF", "SUPER", "PLAYOFF"]):
+        m = WEEK_RX.search(s); return (int(m.group(1)) if m else None), PHASE_POST
+    m = WEEK_RX.search(s)
+    if m: return int(m.group(1)), PHASE_REGULAR
+    return None, PHASE_UNKNOWN
+
+
+def am_to_dec(american) -> Optional[float]:
+    try:
+        a = float(american)
+    except Exception:
+        return None
+    if a == 0: return None
+    return 1.0 + (a / 100.0 if a > 0 else 100.0 / abs(a))
+
+
+def compute_row_profit(row: pd.Series, use_parlay_first: bool = True) -> tuple[float, float]:
+    stake = float(row.get("stake") or 1.0)
+    if use_parlay_first and not pd.isna(row.get("parlay_stake")):
+        stake = float(row.get("parlay_stake") or stake)
+    dec = am_to_dec(row.get("odds"))
+    res = str(row.get("result") or "").lower()
+    if dec is None or pd.isna(dec): return stake, 0.0
+    if res == "win":  return stake, stake * (dec - 1.0)
+    if res == "lose": return stake, -stake
+    if res == "push": return stake, 0.0
+    return stake, 0.0
+
+
+def _combined_decimal_odds(group: pd.DataFrame) -> Optional[float]:
+    decs = []
+    for _, r in group.iterrows():
+        d = am_to_dec(r.get("odds"))
+        if d is None or pd.isna(d): return None
+        decs.append(float(d))
+    prod = 1.0
+    for d in decs: prod *= d
+    return prod
+
+
+def _parlay_result(group: pd.DataFrame) -> str:
+    res = group["result"].astype(str).str.lower().fillna("")
+    if (res == "lose").any(): return "lose"
+    if (res == "win").all() and len(res) > 0: return "win"
+    if (res == "push").any(): return "push"
+    return ""
+
+
+def compute_parlay_row_profit(row: pd.Series) -> tuple[float, float]:
+    stake = float(row.get("parlay_stake") or 1.0)
+    dec   = row.get("dec_comb")
+    res   = str(row.get("result") or "").lower()
+    if dec is None or pd.isna(dec): return stake, 0.0
+    if res == "win":  return stake, stake * (float(dec) - 1.0)
+    if res == "lose": return stake, -stake
+    if res == "push": return stake, 0.0
+    return stake, 0.0
+
+
+def ensure_sort_ts(df: pd.DataFrame) -> pd.DataFrame:
+    """Make guaranteed tz-naive sort_ts using known timestamp columns or a synthetic sequence."""
+    if df is None or df.empty: return df
+    out = df.copy()
+    cand = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, UTC]")
+
+    for c in TS_CANDIDATES:
+        if c in out.columns:
+            cand = cand.fillna(pd.to_datetime(out[c], errors="coerce", utc=True))
+
+    if cand.isna().all():
+        base = pd.Timestamp.utcnow().tz_localize("UTC")
+        cand = base + pd.to_timedelta(np.arange(len(out)), unit="s")
+
+    out["sort_ts"] = pd.to_datetime(cand, errors="coerce", utc=True).dt.tz_convert("UTC").dt.tz_localize(None)
+    return out
+
+
+# ------------------------ Load & Prepare ------------------------
+def load_edges() -> pd.DataFrame:
+    # Prefer loader_scores (uses parlay_scores.csv if present)
+    try:
+        df, _src_path = load_edges_or_scores()
+    except Exception:
+        df = read_csv_safe(EDGES_CSV)
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    core = ["ts","sort_ts","sport","league","season","week","market","ref",
+            "side","line","odds","p_win","ev","result","stake","parlay_stake","game_id"]
+    for c in core:
+        if c not in df.columns: df[c] = None
+
+    # Normalize numerics
+    for c in ["season","odds","p_win","ev","stake","parlay_stake"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Basic text fields
+    df["result"] = df["result"].astype(str).str.lower().str.strip()
+
+    # Week normalization
+    wk = df["week"].map(normalize_week_label)
+    df["week_num"] = wk.map(lambda x: x[0] if isinstance(x, tuple) else None)
+    df["phase"]    = wk.map(lambda x: x[1] if isinstance(x, tuple) else PHASE_UNKNOWN)
+
+    # Season fallback if missing
+    if df["season"].isna().all():
+        # infer from timestamps (year)
+        tmp = pd.to_datetime(df.get("ts", df.get("sort_ts")), errors="coerce")
+        if tmp.notna().any():
+            df["season"] = tmp.dt.year
+
+    # Guaranteed, tz-naive sort_ts
+    df = ensure_sort_ts(df)
+
+    return df
+
+
+def seasons_from_df(df: pd.DataFrame) -> list[int]:
+    vals = pd.to_numeric(df["season"], errors="coerce").dropna().astype(int).tolist()
+    return sorted({s for s in vals if s >= MIN_SEASON})
+
+
+# ------------------------ Parlay Grouping ------------------------
+def ensure_parlay_grouping(df: pd.DataFrame, parlay_mode: bool) -> Tuple[pd.DataFrame, Optional[str], bool]:
+    """Return (df_with_key, group_col, effective_parlay_mode)."""
+    if df is None or df.empty: return df, None, False
+
+    # Use an existing key if present
+    for c in PARLAY_GROUP_CANDIDATES:
+        if c in df.columns and df[c].notna().any():
+            return df, c, parlay_mode
+
+    if not parlay_mode:
+        return df, None, False
+
+    out = df.copy()
+
+    # Prefer 'ts', else 'sort_ts'
+    ts_series = pd.to_datetime(out.get("ts", out.get("sort_ts")), errors="coerce")
+    if ts_series.notna().any():
+        seasonish = pd.to_numeric(out.get("season"), errors="coerce").fillna(ts_series.dt.year).astype(int)
+        if "week_num" in out.columns and pd.to_numeric(out["week_num"], errors="coerce").notna().any():
+            weekish = pd.to_numeric(out["week_num"], errors="coerce").fillna(ts_series.dt.isocalendar().week).astype(int)
+        else:
+            weekish = ts_series.dt.isocalendar().week.astype(int)
+
+        ts_s = ts_series.dt.floor("s")
+        ref_key = out["ref"].astype(str) if "ref" in out.columns else ""
+
+        grp_cols = pd.DataFrame({"_ref": ref_key, "_season": seasonish, "_week": weekish, "_tss": ts_s})
+
+        _chunk = int(globals().get("MAX_LEGS_PER_SLIP", 6))
+        chunk_idx = grp_cols.groupby(["_ref","_season","_week","_tss"]).cumcount() // _chunk
+
+        slip_key = (
+            grp_cols["_ref"].astype(str) + "|" +
+            grp_cols["_season"].astype(str) + "|" +
+            grp_cols["_week"].astype(str) + "|" +
+            grp_cols["_tss"].astype("int64").astype(str) + "|" +
+            chunk_idx.astype(str)
+        )
+        out["slip_id"] = pd.util.hash_pandas_object(slip_key, index=False).astype("int64").abs().astype(str).str[-12:]
+        return out, "slip_id", True
+
+    if "game_id" in out.columns and out["game_id"].notna().any():
+        out["slip_id"] = out["game_id"].astype(str); return out, "slip_id", True
+
+    out["slip_id"] = np.arange(len(out)); return out, "slip_id", True
+
+
+def legs_to_parlays(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    key = None
+    for k in ("parlay_id","slip_id","ticket_id","bet_id"):
+        if k in df.columns:
+            key = k; break
+    if key is None: return pd.DataFrame()
+
+    groups = []
+    for pid, g in df.groupby(key, dropna=False):
+        pstake = pd.to_numeric(g.get("parlay_stake"), errors="coerce").dropna()
+        stake = float(pstake.iloc[0]) if not pstake.empty else float(
+            pd.to_numeric(g.get("stake"), errors="coerce").dropna().iloc[0] if pd.to_numeric(g.get("stake"), errors="coerce").notna().any() else 1.0
+        )
+        dec = _combined_decimal_odds(g)
+        result = _parlay_result(g)
+        sort_ts = pd.to_datetime(g["sort_ts"], errors="coerce").min()
+        season  = pd.to_numeric(g.get("season"), errors="coerce").dropna().astype(int)
+        season  = int(season.iloc[0]) if not season.empty else None
+        groups.append(dict(
+            sort_ts=sort_ts, season=season, market="PARLAY", ref=str(pid),
+            odds=None, dec_comb=dec, parlay_stake=stake, result=result, legs=len(g),
+            stake=None, p_win=None, ev=None, ts=sort_ts
+        ))
+    return pd.DataFrame(groups)
+
+
+# ------------------------ Analytics ------------------------
+def equity_curve(work: pd.DataFrame, starting_bankroll: float = 100.0, use_parlay_first: bool = True) -> pd.DataFrame:
+    if work is None or work.empty:
+        return pd.DataFrame({"ts": [], "equity": []})
+    W = work.sort_values("sort_ts", ascending=True, na_position="last").copy()
+    running = float(starting_bankroll); eq = []
+    for _, r in W.iterrows():
+        stake, pnl = compute_parlay_row_profit(r) if st.session_state.get("bk_mode_parlay", False) \
+            else compute_row_profit(r, use_parlay_first=use_parlay_first)
+        running += pnl; eq.append(running)
+    return pd.DataFrame({"ts": W["sort_ts"].values, "equity": eq})
+
+
+def max_drawdown(equity_series: Iterable[float]) -> Tuple[float, float, float]:
+    max_dd = 0.0; peak = -np.inf; trough = -np.inf; run_peak = -np.inf
+    for v in equity_series:
+        run_peak = max(run_peak, v)
+        dd = run_peak - v
+        if dd > max_dd:
+            max_dd = dd; peak = run_peak; trough = v
+    return float(max_dd), float(peak if peak != -np.inf else 0.0), float(trough if trough != -np.inf else 0.0)
+
+
+def summarize(work: pd.DataFrame, use_parlay_first: bool = True) -> dict:
+    if work is None or len(work) == 0:
+        return dict(total_bets=0, wins=0, losses=0, pushes=0, win_pct=0.0,
+                    avg_ev=np.nan, total_stake=0.0, total_profit=0.0, roi=0.0,
+                    max_drawdown=0.0, peak_equity=0.0, final_equity=0.0)
+    if "result" not in work.columns:
+        work = work.assign(result=np.nan)
+    res = work["result"].astype(str).str.lower()
+
+    total_bets = len(work)
+    wins   = int((res == "win").sum())
+    losses = int((res == "lose").sum())
+    pushes = int((res == "push").sum())
+
+    stakes, profits = [], []
+    for _, r in work.iterrows():
+        s, p = (compute_parlay_row_profit(r) if st.session_state.get("bk_mode_parlay", False)
+                else compute_row_profit(r, use_parlay_first=use_parlay_first))
+        stakes.append(float(s)); profits.append(float(p))
+    total_stake  = float(sum(stakes)) if stakes else 0.0
+    total_profit = float(sum(profits)) if profits else 0.0
+    win_pct = (wins / total_bets) if total_bets else 0.0
+    roi     = (total_profit / total_stake) if total_stake > 0 else 0.0
+    avg_ev  = float(pd.to_numeric(work.get("ev"), errors="coerce").dropna().mean()) if "ev" in work.columns else np.nan
+
+    eq = equity_curve(work, starting_bankroll=0.0, use_parlay_first=use_parlay_first)
+    max_dd, peak_eq, final_eq = 0.0, 0.0, 0.0
+    if not eq.empty:
+        md, pk, _ = max_drawdown(eq["equity"].tolist())
+        max_dd, peak_eq = float(md), float(pk)
+        final_eq = float(eq["equity"].iloc[-1])
+
+    return dict(
+        total_bets=total_bets, wins=wins, losses=losses, pushes=pushes,
+        win_pct=win_pct, avg_ev=avg_ev,
+        total_stake=total_stake, total_profit=total_profit, roi=roi,
+        max_drawdown=max_dd, peak_equity=peak_eq, final_equity=final_eq,
+    )
+
+
+def build_near_misses(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    legs = df.copy()
+    legs["result"] = legs.get("result", "").astype(str).str.lower()
+    legs = legs[legs["result"].isin(["win","lose","push"])]
+    legs = ensure_sort_ts(legs)
+
+    legs, key, _ = ensure_parlay_grouping(legs, parlay_mode=True)
+    if key is None: return pd.DataFrame()
+
+    out = []
+    for pid, g in legs.groupby(key, dropna=False):
+        res = g["result"].astype(str).str.lower().fillna("")
+        loses = int((res == "lose").sum()); wins  = int((res == "win").sum()); total = int(len(g))
+        if total >= 2 and loses == 1 and wins >= 1:
+            first_ts = pd.to_datetime(g["sort_ts"], errors="coerce").min()
+            season   = pd.to_numeric(g.get("season"), errors="coerce").dropna().astype(int)
+            out.append(dict(
+                parlay_id=str(pid), legs=total, lost_legs=loses, won_legs=wins,
+                season=(int(season.iloc[0]) if not season.empty else None), sort_ts=first_ts
+            ))
+    if not out: return pd.DataFrame()
+    return pd.DataFrame(out).sort_values("sort_ts", ascending=False, na_position="last")
+
+
+# ------------------------ UI ------------------------
+def main():
+    st.title("Backtest")
+
+    edges = load_edges()
+    if edges.empty:
+        st.info(f"No edges found at: {EDGES_CSV}")
+        st.stop()
+
+    # ==== Sane defaults ====
+    st.session_state.setdefault("bk_start_bankroll", 100.0)
+    st.session_state.setdefault("bk_newest_first", True)
+    st.session_state.setdefault("bk_use_parlay_first", True)
+    st.session_state.setdefault("bk_mode_parlay", False)
+    st.session_state.setdefault("bk_only_settled", True)
+
+    # ---- Filters row ----
+    colA, colB, colC, colD = st.columns([3, 3, 1.6, 1.8])
+
+    with colA:
+        st.caption("Seasons")
+        season_opts = seasons_from_df(edges) or [MIN_SEASON]
+        default_seasons = season_opts[-1:]
+        sel_seasons = st.multiselect("Choose seasons", season_opts, default=default_seasons, label_visibility="collapsed")
+
+    with colB:
+        st.caption("Weeks (optional)")
+        wk_df = edges[edges["season"].isin(sel_seasons)] if sel_seasons else edges
+        week_options = sorted(wk_df["week"].dropna().astype(str).unique().tolist())
+        sel_weeks = st.multiselect("Choose weeks", ["All"] + week_options, default=["All"], label_visibility="collapsed")
+
+    with colC:
+        st.caption("Starting bankroll (units)")
+        st.session_state["bk_start_bankroll"] = st.number_input(
+            "Starting bankroll", min_value=0.0, value=float(st.session_state["bk_start_bankroll"]),
+            step=10.0, label_visibility="collapsed"
+        )
+        st.checkbox("Use parlay stake first", value=st.session_state["bk_use_parlay_first"], key="bk_use_parlay_first")
+
+    with colD:
+        st.caption("Newest first / Parlay / Settled")
+        st.toggle("Newest first", value=st.session_state["bk_newest_first"], key="bk_newest_first", label_visibility="collapsed")
+        st.toggle('Parlay mode', key="bk_mode_parlay")
+        st.toggle('Settled only', key='bk_only_settled')
+        run_bt = st.button("Run Backtest", use_container_width=True)
+
+    # ---- Apply filters ----
+    base = edges.copy()
+    if sel_seasons:
+        base = base[base["season"].isin(sel_seasons)]
+    if sel_weeks and "All" not in sel_weeks:
+        base = base[base["week"].astype(str).isin([str(w) for w in sel_weeks])]
+
+    # Settled only — prefer __settled if present, else result in {win,lose,push}
+    if st.session_state.get("bk_only_settled", True):
+        if "__settled" in base.columns:
+            base = base[base["__settled"] == True]
+        else:
+            base = base[base["result"].isin(["win","lose","push"])]
+
+    # Ensure timestamps are sortable (tz-naive)
+    base = ensure_sort_ts(base)
+
+    # Parlay mode → aggregate legs to slips
+    work = base.copy()
+    if st.session_state.get("bk_mode_parlay", False):
+        legs, group_col, _ = ensure_parlay_grouping(work, parlay_mode=True)
+        if group_col is None:
+            st.warning("Parlay mode ON but no grouping columns found; falling back to singles.", icon="⚠️")
+        else:
+            slips = legs_to_parlays(legs)
+            if slips is not None and not slips.empty:
+                work = ensure_sort_ts(slips)
+            else:
+                st.warning("Could not build parlay slips; falling back to singles.", icon="⚠️")
+
+    if work.empty:
+        st.warning("No rows match the filters (try All weeks / All seasons or disable Settled Only).")
+        st.stop()
+
+    # ---- Near-miss parlays (exactly one losing leg) ----
+    st.subheader("Near-miss parlays (exactly one leg lost)")
+    if not st.session_state.get("bk_mode_parlay", False):
+        # Near-miss detection needs leg-level data; use base (pre-aggregation)
+        nm = build_near_misses(base)
+        st.caption(f"Found {len(nm):,} near-miss parlays")
+        if not nm.empty:
+            st.dataframe(nm, use_container_width=True, hide_index=True)
+            st.download_button("Download near-miss parlays (CSV)", data=nm.to_csv(index=False).encode(), file_name="near_miss_parlays.csv")
+        else:
+            st.info("No near-miss parlays for the current filters.")
+    else:
+        st.info("Near-miss view is based on legs; turn Parlay mode off to see them.")
+
+    # ---- Summary + Equity ----
+    stats = summarize(work, use_parlay_first=st.session_state["bk_use_parlay_first"])
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Total Bets", f"{stats['total_bets']:,}")
+    c2.metric("Wins / Losses / Push", f"{stats['wins']}/{stats['losses']}/{stats['pushes']}")
+    c3.metric("Win %", f"{stats['win_pct']*100:0.1f}%")
+    c4.metric("ROI", f"{stats['roi']*100:0.1f}%")
+    c5.metric("Total Profit", f"{stats['total_profit']:0.2f}")
+    c6.metric("Max Drawdown", f"{stats['max_drawdown']:0.2f}")
+
+    eq = equity_curve(work, starting_bankroll=0.0, use_parlay_first=st.session_state["bk_use_parlay_first"])
+    if not eq.empty:
+        eq = eq.set_index("ts")
+        st.line_chart(eq["equity"], use_container_width=True)
+
+    # ---- Preview rows ----
+    with st.expander("Rows used in this backtest", expanded=False):
+        st.dataframe(work.head(1000), use_container_width=True)
+
+
+if __name__ == "__main__":
+    main()
+
+

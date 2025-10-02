@@ -1,0 +1,59 @@
+from pathlib import Path
+import pandas as pd
+EXPORTS = Path(__file__).resolve().parents[3] / 'exports'
+EDGES_CANDIDATES = [EXPORTS / 'edges_graded_full_normalized_std_maxaligned.csv', EXPORTS / 'edges_graded_full_normalized_std.csv', EXPORTS / 'edges_standardized.csv']
+SCORES_CANDIDATES = [EXPORTS / 'scores_normalized_std_maxaligned.csv', EXPORTS / 'scores_normalized_std_patched.csv', EXPORTS / 'scores_standardized_with_iso.csv', EXPORTS / 'scores_with_iso.csv', EXPORTS / 'scores_1966-2025.csv']
+
+def _first_existing(paths):
+    for p in paths:
+        if p.exists():
+            return p
+    return None
+
+def get_edges_path():
+    return _first_existing(EDGES_CANDIDATES)
+
+def get_scores_path():
+    return _first_existing(SCORES_CANDIDATES)
+
+def _as_iso(s):
+    return pd.to_datetime(s, errors='coerce').dt.strftime('%Y-%m-%d')
+
+def _upper_strip(s):
+    return s.astype(str).str.upper().str.strip()
+
+def load_edges():
+    p = get_edges_path()
+    if p is None:
+        raise FileNotFoundError('No edges file found in exports/')
+    df = pd.read_csv(p, low_memory=False)
+    if '_date_iso' not in df.columns and '_DateISO' in df.columns:
+        df['_date_iso'] = df['_DateISO']
+    df['_date_iso'] = _as_iso(df.get('_date_iso', ''))
+    df['_home_nick'] = _upper_strip(df.get('_home_nick', df.get('_HomeNick', '')))
+    df['_away_nick'] = _upper_strip(df.get('_away_nick', df.get('_AwayNick', '')))
+    df['Season'] = df.get('Season', df.get('season', '')).astype(str).str.strip()
+    df['Week'] = df.get('Week', df.get('week', '')).astype(str).str.strip()
+    return df
+
+def load_scores():
+    p = get_scores_path()
+    if p is None:
+        raise FileNotFoundError('No scores file found in exports/')
+    df = pd.read_csv(p, low_memory=False)
+    if '_date_iso' not in df.columns and '_DateISO' in df.columns:
+        df['_date_iso'] = df['_DateISO']
+    df['_date_iso'] = _as_iso(df.get('_date_iso', df.get('Date_ISO', '')))
+    df['_home_nick'] = _upper_strip(df.get('_home_nick', df.get('_HomeNick', '')))
+    df['_away_nick'] = _upper_strip(df.get('_away_nick', df.get('_AwayNick', '')))
+    for sc in ('HomeScore', 'home_score', 'homeScore'):
+        if sc in df.columns:
+            df['HomeScore'] = df[sc]
+            break
+    for sc in ('AwayScore', 'away_score', 'awayScore'):
+        if sc in df.columns:
+            df['AwayScore'] = df[sc]
+            break
+    df['Season'] = df.get('Season', df.get('season', '')).astype(str).str.strip()
+    df['Week'] = df.get('Week', df.get('week', '')).astype(str).str.strip()
+    return df

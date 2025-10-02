@@ -1,0 +1,174 @@
+﻿from __future__ import annotations
+from pathlib import Path
+import sys, time, subprocess, shlex
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="All Picks Explorer", layout="wide")
+st.title("🔎 All Picks Explorer — Fresh Picks (no app.lib.exports)")
+
+# ── Refresh + Auto-refresh
+c1, c2, c3 = st.columns([1,1,6])
+if c1.button("🔄 Refresh now", type="primary", use_container_width=True):
+    try: st.cache_data.clear()
+    except Exception: pass
+    st.rerun()
+
+auto = c2.toggle("Auto-refresh", value=True)
+interval = c2.slider("Every (sec)", 5, 180, 30, 5)
+if auto:
+    st.session_state["_heartbeat"] = int(time.time())
+    st.query_params.update({"_": st.session_state["_heartbeat"]})
+
+# ── Paths
+HERE = Path(__file__).resolve()
+APP  = HERE.parents[1]
+SU   = HERE.parents[2]
+REPO = HERE.parents[3]
+
+SEARCH_ROOTS = [p for p in [
+    REPO / "exports",
+    SU   / "exports",
+    APP  / "exports",
+    REPO / "data_scaffold" / "exports",
+] if p.exists()]
+
+# ── Discovery (built-in only)
+PATTERNS = ["edges*.csv", "picks*.csv", "best_prices*.csv", "all_picks*.csv"]
+
+def _iter_candidates(roots):
+    for root in roots:
+        if not root.exists(): continue
+        for pat in PATTERNS:
+            for p in root.glob(pat):
+                try:
+                    if p.exists() and p.stat().st_size > 0:
+                        yield p
+                except Exception:
+                    pass
+
+def _find_latest_export_local(roots, min_size_bytes: int = 0) -> Path|None:
+    cands = list(_iter_candidates(roots))
+    if not cands: return None
+    cands = sorted(cands, key=lambda p: (p.stat().st_size, p.stat().st_mtime), reverse=True)
+    for pth in cands:
+        if pth.stat().st_size >= int(min_size_bytes):
+            return pth
+    return cands[0]
+
+@st.cache_data(ttl=60)
+def _read_csv_cached(path_str: str) -> pd.DataFrame:
+    return pd.read_csv(path_str)
+
+# ── Sidebar
+with st.sidebar:
+    st.subheader("Filters")
+    q = st.text_input("Filter (any column)", "")
+    recency_hours = st.number_input("Only rows newer than (hours)", 0, 168, 0)
+    min_size_bytes = st.number_input("Prefer files ≥ this size (bytes)", 0, value=1024, step=512)
+
+# ── Pick freshest *full* file
+latest = _find_latest_export_local(SEARCH_ROOTS, min_size_bytes=min_size_bytes)
+if not latest:
+    st.info(f"No edges/picks CSVs found. Looked in: {[str(x) for x in SEARCH_ROOTS]}")
+    st.stop()
+
+# ── Load & normalize
+try:
+    df = _read_csv_cached(str(latest))
+except Exception as e:
+    st.error(f"Failed to read {latest}: {e}")
+    st.stop()
+
+df.columns = [str(c).strip() for c in df.columns]
+aliases = {"prob":"p_win", "p":"p_win", "win_prob":"p_win", "price":"odds", "american":"odds", "timestamp":"ts"}
+for a,b in aliases.items():
+    if a in df.columns and b not in df.columns:
+        df[b] = df[a]
+for c in ["ts","game_id","market","side","book","line","odds","p_win","ev"]:
+    if c not in df.columns: df[c] = None
+df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+for c in ["odds","p_win","ev","line"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Row recency
+if recency_hours and "ts" in df.columns:
+    cut = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=int(recency_hours))
+    df = df[df["ts"].fillna(pd.Timestamp(0, tz="UTC")) >= cut]
+
+mtime = pd.Timestamp.fromtimestamp(latest.stat().st_mtime, tz="UTC")
+age = pd.Timestamp.now(tz="UTC") - mtime
+st.caption(f"Using: {latest} • size: {latest.stat().st_size} bytes • age: {age.components.days}d {age.components.hours}h {age.components.minutes}m • rows: {len(df)}")
+
+# ── 📂 Manual source picker
+with st.expander("📂 Pick another source file"):
+    files = sorted(set(_iter_candidates(SEARCH_ROOTS)), key=lambda p: (p.stat().st_size, p.stat().st_mtime), reverse=True)
+    labels = [f"{p.stat().st_size:>8d} bytes — {p.name} — {pd.Timestamp.fromtimestamp(p.stat().st_mtime, tz='UTC'):%Y-%m-%d %H:%M}Z — {p.parent}" for p in files]
+    if files:
+        idx = st.selectbox("Available files (largest & newest first)", options=list(range(len(files))), format_func=lambda i: labels[i], index=0)
+        if st.button("Load selected file"):
+            try:
+                _read_csv_cached.clear()
+                df = pd.read_csv(files[idx])
+                latest = files[idx]
+                mtime = pd.Timestamp.fromtimestamp(latest.stat().st_mtime, tz="UTC")
+                age = pd.Timestamp.now(tz="UTC") - mtime
+                st.success(f"Loaded {latest.name} • {latest.stat().st_size} bytes • age {age.components.days}d {age.components.hours}h {age.components.minutes}m")
+            except Exception as e:
+                st.error(f"Could not load {files[idx]}: {e}")
+
+# ── ETL Runner (fetch fresh data)
+st.subheader("⚙️ Fetch fresh data (ETL)")
+ETL_CANDIDATES = [
+    REPO / "serving" / "scan_edges.py",
+    REPO / "serving" / "update_picks.py",
+    REPO / "core_engine" / "etl" / "pull_lines.py",
+    REPO / "core_engine" / "etl" / "pull_stats.py",
+]
+etl_found = [p for p in ETL_CANDIDATES if p.exists()]
+if not etl_found:
+    st.info("No ETL scripts found in expected locations. Add your script path to ETL_CANDIDATES in this file.")
+else:
+    etl_map = {f"{p.name} — {p.parent}": p for p in etl_found}
+    choice = st.selectbox("Script", list(etl_map.keys()))
+    run_btn = st.button("🚀 Run ETL now", type="secondary")
+    if run_btn:
+        script = etl_map[choice]
+        py = sys.executable or str(Path(sys.prefix) / "python.exe")
+        cmd = [py, str(script)]
+        st.code(" ".join(shlex.quote(x) for x in cmd), language="bash")
+        log = st.empty()
+        with st.status("ETL running…", expanded=True) as status:
+            try:
+                proc = subprocess.Popen(cmd, cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+                lines = []
+                for line in proc.stdout:
+                    lines.append(line.rstrip())
+                    lines = lines[-200:]
+                    log.text("\n".join(lines))
+                rc = proc.wait()
+                if rc == 0:
+                    status.update(state="complete", label="ETL finished ✅")
+                    try: _read_csv_cached.clear()
+                    except Exception: pass
+                    st.success("Cache cleared. Click **Refresh now** to reload the newest file.")
+                else:
+                    status.update(state="error", label=f"ETL exited with code {rc}")
+            except Exception as e:
+                st.exception(e)
+
+# ── Filter + table + download
+cols = [c for c in ["ts","game_id","market","side","book","line","odds","p_win","ev"] if c in df.columns]
+if q:
+    mask = df.astype(str).apply(lambda s: s.str.contains(q, case=False, na=False)).any(axis=1)
+    df = df[mask]
+st.dataframe(df[cols] if cols else df, use_container_width=True, height=520)
+st.download_button("⬇️ Download filtered picks.csv", data=df.to_csv(index=False).encode("utf-8"), file_name="picks_filtered.csv", mime="text/csv")
+
+with st.expander("⚙️ Diagnostics"):
+    st.write("Search roots:", [str(x) for x in SEARCH_ROOTS])
+    st.write("Latest file:", str(latest))
+    try:
+        st.dataframe(pd.read_csv(latest, nrows=50), use_container_width=True)
+    except Exception as e:
+        st.error(f"Preview read error: {e}")

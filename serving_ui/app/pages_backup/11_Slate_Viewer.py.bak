@@ -1,0 +1,431 @@
+# 11_Slate_Viewer.py Ã¢â‚¬â€ cleaned + fixed
+# Location expectation: .../serving_ui/app/pages/11_Slate_Viewer.py
+# Looks for CSVs under repo/db (preferred), then serving_ui/db, then app/db.
+# Accepts fixed names and versioned patterns like market_lines_2025.csv.
+
+from __future__ import annotations
+
+import re
+from glob import glob
+from pathlib import Path
+from typing import Iterable, Optional, Tuple
+
+import pandas as pd
+import streamlit as st
+
+# ======================= Paths =======================
+HERE = Path(__file__).resolve()
+# For .../serving_ui/app/pages/11_Slate_Viewer.py:
+# parents[0] = .../serving_ui/app/pages
+# parents[1] = .../serving_ui/app
+# parents[2] = .../serving_ui
+# parents[3] = .../edge-finder (repo root)
+APP  = HERE.parents[1]
+SU   = HERE.parents[2]
+REPO = HERE.parents[3]
+
+DB_CANDIDATES = [
+    REPO / "db",
+    SU   / "db",
+    APP  / "db",
+]
+DB_DIR = next((d for d in DB_CANDIDATES if d.exists()), REPO / "db")
+
+# ======================= Page =======================
+st.set_page_config(page_title="Ã°Å¸â€œâ€¹ Slate Viewer", layout="wide")
+st.title("Ã°Å¸â€œâ€¹ Slate Viewer")
+
+# ======================= UI helpers (once-only widgets) =======================
+PAGE_K = "sv"
+def k(name: str) -> str: return f"{PAGE_K}_{name}"
+def _created_flag(user_key: str) -> str: return user_key + "__created"
+
+def text_input_once(label, keyname, default="", **kw):
+    uk = k(keyname)
+    if st.session_state.get(_created_flag(uk)): return st.session_state.get(uk, default)
+    v = st.text_input(label, value=st.session_state.get(uk, default), key=uk, **kw)
+    st.session_state[_created_flag(uk)] = True; return v
+
+def multiselect_once(label, options, default, keyname, **kw):
+    uk = k(keyname)
+    if st.session_state.get(_created_flag(uk)): return st.session_state.get(uk, default)
+    v = st.multiselect(label, options, default=default, key=uk, **kw)
+    st.session_state[_created_flag(uk)] = True; return v
+
+def checkbox_once(label, keyname, default=False, **kw):
+    uk = k(keyname)
+    if st.session_state.get(_created_flag(uk)): return bool(st.session_state.get(uk, default))
+    v = st.checkbox(label, value=st.session_state.get(uk, default), key=uk, **kw)
+    st.session_state[_created_flag(uk)] = True; return v
+
+def date_input_once(label, keyname, **kw):
+    uk = k(keyname)
+    if st.session_state.get(_created_flag(uk)): return st.session_state.get(uk)
+    v = st.date_input(label, key=uk, **kw)
+    st.session_state[_created_flag(uk)] = True; return v
+
+# ======================= Candidate file discovery =======================
+FIXED_NAMES = [
+    "schedule_2025_template.csv",
+    "games_2025_more.csv",
+    "market_lines.csv",
+    "odds_books.csv",
+    "lines.csv",
+]
+GLOBS = [
+    "market_lines_*.csv",
+    "schedule_*.csv",
+    "games_*_more.csv",
+]
+
+def _iter_candidates(db_dir: Path) -> Iterable[Path]:
+    # fixed names first (priority), then globbed
+    for n in FIXED_NAMES:
+        yield db_dir / n
+    for pat in GLOBS:
+        for p in sorted((db_dir.glob(pat)), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True):
+            yield p
+
+def _is_valid_csv(p: Path) -> bool:
+    try:
+        return p.exists() and p.stat().st_size > 5
+    except Exception:
+        return False
+
+def _parse_season_token(s: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    """Returns (label, season_start, season_end). Supports '2025-26', '2025/2026', '2025'."""
+    s = str(s).strip()
+    m = re.search(r'(\d{4})\s*[-/Ã¢â‚¬â€œ]\s*(\d{2,4})', s)
+    if m:
+        a = int(m.group(1)); b_raw = m.group(2)
+        b = int(b_raw) if len(b_raw) == 4 else (a // 100) * 100 + int(b_raw)
+        return (f"{a}-{b}", a, b)
+    m = re.search(r'(\d{4})', s)
+    if m:
+        a = int(m.group(1)); return (str(a), a, a + 1)
+    return (None, None, None)
+
+def _infer_from_filename(p: Path) -> Tuple[Optional[int], Optional[int]]:
+    label, a, b = _parse_season_token(p.stem)
+    return (a, b)
+
+def pick_best_source(paths: Iterable[Path]) -> Tuple[Optional[Path], Optional[str], Optional[int]]:
+    """Prefer files with a 'season' column and latest season_end; else use filename; else newest mtime."""
+    chosen, best_key, best_label = None, None, None
+    for p in paths:
+        if not _is_valid_csv(p): 
+            continue
+        season_end = season_start = None
+        label = None
+        try:
+            tmp = pd.read_csv(p, nrows=500)
+            if "season" in tmp.columns:
+                vals = pd.to_numeric(tmp["season"], errors="coerce")
+                if vals.notna().any():
+                    # if any values look like 2025 or "2025-2026" as strings, try parse token too
+                    # but numeric season usually hnews the start year
+                    start = int(vals.max())
+                    season_start, season_end = start, start + 1
+                    label = f"{season_start}-{season_end}"
+            if season_end is None:
+                # try filename
+                a, b = _infer_from_filename(p)
+                if a and b:
+                    season_start, season_end = a, b
+                    label = f"{a}-{b}"
+        except Exception:
+            # last resort: leave season keys None
+            pass
+
+        # Fallback to mtime key if no season info
+        mtime = int(p.stat().st_mtime)
+        if season_end is not None:
+            key = (1, season_end, season_start or 0, mtime)  # prefer season-aware
+        else:
+            key = (0, 0, 0, mtime)  # mtime-only fallback
+        if best_key is None or key > best_key:
+            best_key, best_label, chosen = key, label, p
+    if chosen is None:
+        return None, None, None
+    # If still no label, use year from mtime
+    if best_label is None:
+        best_label = chosen.stem
+    return chosen, best_label, (int(best_label.split("-")[-1]) if "-" in best_label else None)
+
+# Build candidate list in priority order
+CANDIDATES = list(_iter_candidates(DB_DIR))
+LINES_PATH, detected_label, detected_end = pick_best_source(CANDIDATES)
+
+if LINES_PATH is None:
+    st.error(f"Ã¢ÂÅ’ No valid lines/schedule file found in {DB_DIR}/")
+    with st.expander("Diagnostics", expanded=True):
+        st.write("Checked fnewers:", [str(p) for p in DB_CANDIDATES])
+        st.write("DB_DIR exists?", DB_DIR.exists())
+        st.write("Candidates (fixed + globs):", [str(p) for p in CANDIDATES])
+    st.stop()
+
+st.caption(f"Using source: {LINES_PATH} (detected season: {detected_label or detected_end})")
+
+# ======================= Normalization helpers =======================
+def american_to_decimal(odds):
+    try:
+        o = float(str(odds).replace("+", ""))
+    except Exception:
+        return None
+    if o > 0:  return 1.0 + (o / 100.0)
+    if o < 0:  return 1.0 + (100.0 / abs(o))
+    return None
+
+def implied_prob(odds):
+    try:
+        o = float(str(odds).replace("+", ""))
+    except Exception:
+        return None
+    if o > 0:  return 100.0 / (o + 100.0)
+    if o < 0:  return abs(o) / (abs(o) + 100.0)
+    return None
+
+def normalize_market(s: str) -> str:
+    s = str(s).strip().lower()
+    return {
+        "h2h": "H2H", "moneyline": "H2H", "ml": "H2H", "mline": "H2H",
+        "spread": "SPREADS", "spreads": "SPREADS", "handicap": "SPREADS",
+        "total": "TOTALS", "totals": "TOTALS", "o/u": "TOTALS", "ou": "TOTALS",
+    }.get(s, s.upper())
+
+def normalize_lines(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [c.strip().lower() for c in out.columns]
+    if "price" in out.columns and "odds" not in out.columns:
+        out = out.rename(columns={"price": "odds"})
+    if "home_away" in out.columns and "side" not in out.columns:
+        out = out.rename(columns={"home_away": "side"})
+    if "sportsbook" in out.columns and "book" not in out.columns:
+        out = out.rename(columns={"sportsbook": "book"})
+    if "book_name" in out.columns and "book" not in out.columns:
+        out = out.rename(columns={"book_name": "book"})
+    out["market"] = out["market"].apply(normalize_market) if "market" in out.columns else "H2H"
+    if "side" in out.columns:
+        out["side"] = (
+            out["side"].astype(str).str.upper()
+             .replace({"HOME": "HOME", "H": "HOME", "AWAY": "AWAY", "A": "AWAY"})
+        )
+    if "game_id" not in out.columns:
+        if "home_team" in out.columns and "away_team" in out.columns:
+            out["game_id"] = out["home_team"].astype(str) + " vs " + out["away_team"].astype(str)
+        else:
+            out["game_id"] = out.index.astype(str)
+    if "odds" in out.columns:
+        out["dec_odds"] = out["odds"].apply(american_to_decimal)
+        out["imp"] = out["odds"].apply(implied_prob)
+    for c in ["event_time", "start_time", "ts", "timestamp", "kickoff"]:
+        if c in out.columns:
+            out["event_time"] = pd.to_datetime(out[c], errors="coerce"); break
+    if "season" in out.columns: out["season"] = pd.to_numeric(out["season"], errors="coerce")
+    if "week"   in out.columns: out["week"]   = pd.to_numeric(out["week"],   errors="coerce")
+    return out
+
+# ======================= Load + season labeling =======================
+raw = pd.read_csv(LINES_PATH)
+if raw.empty:
+    st.warning(f"`{LINES_PATH.name}` is empty."); st.stop()
+df = normalize_lines(raw)
+
+if "season" in df.columns:
+    labels = df["season"].astype(str)
+    parsed = labels.map(_parse_season_token)
+    df["__season_label"] = parsed.map(lambda t: t[0])
+    df["__season_end"]   = pd.to_numeric(parsed.map(lambda t: t[2]), errors="coerce")
+else:
+    df["__season_label"] = detected_label or (str(detected_end) if detected_end else None)
+    df["__season_end"]   = detected_end
+
+has_season = "__season_label" in df.columns and "__season_end" in df.columns
+if has_season:
+    season_table = (
+        df[["__season_label", "__season_end"]]
+        .dropna().drop_duplicates().sort_values(["__season_end", "__season_label"])
+    )
+    season_labels = season_table["__season_label"].tolist()
+    latest_label  = season_labels[-1] if season_labels else None
+else:
+    season_labels, latest_label = [], None
+
+# ======================= Sidebar Filters =======================
+with st.sidebar:
+    st.subheader("Filters")
+    lock_latest = checkbox_once("Lock to latest season", "lock_latest", default=True)
+    if lock_latest and latest_label:
+        st.caption(f"Season: **{latest_label}**"); pick_season = [latest_label]
+    else:
+        pick_season = multiselect_once("Season(s)", season_labels, default=([latest_label] if latest_label else season_labels), keyname="pick_season")
+
+    def _unique_str(df, col): return sorted(set(df[col].dropna().astype(str))) if col in df.columns else []
+
+    if "season" in df.columns: df["season"] = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
+    if "week"   in df.columns: df["week"]   = pd.to_numeric(df["week"],   errors="coerce").astype("Int64")
+
+    weeks = (pd.Series(df["week"].dropna().unique(), dtype="Int64").sort_values().tolist() if "week" in df.columns else [])
+    pick_week   = multiselect_once("Week(s)", weeks, default=weeks, keyname="pick_week") if weeks else None
+    markets     = _unique_str(df, "market")
+    pick_market = multiselect_once("Market(s)", markets, default=markets, keyname="pick_market") if markets else None
+    books       = _unique_str(df, "book")
+    pick_book   = multiselect_once("Book(s)", books, default=books, keyname="pick_book") if books else None
+
+    teams = _unique_str(df, "team")
+    if not teams:
+        ha = []
+        if "home_team" in df.columns: ha += _unique_str(df, "home_team")
+        if "away_team" in df.columns: ha += _unique_str(df, "away_team")
+        teams = sorted(set(ha))
+    pick_team = multiselect_once("Team(s)", teams, default=teams, keyname="pick_team") if teams else None
+
+    team_search = text_input_once("Search teams (comma = OR)", "team_search", default="", help="Matches team, home_team, or away_team (case-insensitive).")
+
+    def _multiselect_if(df, col, label, keyname):
+        if col not in df.columns: return None
+        vals = sorted(set(df[col].dropna().astype(str)))
+        return multiselect_once(label, vals, default=vals, keyname=keyname) if vals else None
+
+    pick_side     = _multiselect_if(df, "side",     "Side(s)",      "pick_side")
+    pick_result   = _multiselect_if(df, "result",   "Result(s)",    "pick_result")
+    pick_status   = _multiselect_if(df, "status",   "Status",       "pick_status")
+    pick_bet_type = _multiselect_if(df, "bet_type", "Bet type(s)",  "pick_bet_type")
+
+    dt_series = pd.to_datetime(df["event_time"], errors="coerce") if "event_time" in df.columns else None
+    if dt_series is not None and pd.notna(dt_series.min()) and pd.notna(dt_series.max()):
+        dt_min, dt_max = dt_series.min().date(), dt_series.max().date()
+        pick_dates = date_input_once("Date range", "pick_dates", value=(dt_min, dt_max), min_value=dt_min, max_value=dt_max)
+    else:
+        pick_dates = None
+
+    if "ev" in df.columns:
+        ev_series = pd.to_numeric(df["ev"], errors="coerce")
+        ev_min, ev_max = float(ev_series.min(skipna=True) or 0.0), float(ev_series.max(skipna=True) or 0.0)
+        pick_ev_min = st.slider("Min EV", min_value=min(ev_min, 0.0), max_value=max(ev_max, 0.0), value=min(0.0, ev_min), step=0.01, key=k("pick_ev_min"))
+    else:
+        pick_ev_min = None
+
+    only_with_odds  = checkbox_once("Only rows with odds",  "only_with_odds",  default=False)
+    only_with_lines = checkbox_once("Only rows with lines", "only_with_lines", default=False)
+    show_props_only = checkbox_once("Props only",           "show_props_only", default=False)
+    hide_closed     = checkbox_once("Hide closed/settled",  "hide_closed",     default=True)
+
+# ======================= Filtering =======================
+view = df.copy()
+
+if pick_season and "__season_label" in view.columns:
+    view = view[view["__season_label"].isin(pick_season)]
+
+if pick_week is not None and "week" in view.columns:
+    view = view[view["week"].isin(pd.Series(pick_week, dtype="Int64"))]
+
+if pick_market and "market" in view.columns:
+    view = view[view["market"].astype(str).isin(pick_market)]
+
+if pick_book and "book" in view.columns:
+    view = view[view["book"].astype(str).isin(pick_book)]
+
+if pick_team:
+    if "team" in view.columns:
+        view = view[view["team"].astype(str).isin(pick_team)]
+    else:
+        m_home = view["home_team"].astype(str).isin(pick_team) if "home_team" in view.columns else False
+        m_away = view["away_team"].astype(str).isin(pick_team) if "away_team" in view.columns else False
+        view = view[m_home | m_away]
+
+if team_search:
+    terms = [t.strip().lower() for t in str(team_search).split(",") if t.strip()]
+    if terms:
+        cols = []
+        if "team" in view.columns: cols.append(view["team"].astype(str).str.lower())
+        if "home_team" in view.columns: cols.append(view["home_team"].astype(str).str.lower())
+        if "away_team" in view.columns: cols.append(view["away_team"].astype(str).str.lower())
+        if cols:
+            mask_any = False
+            for s in cols:
+                cm = False
+                for t in terms: cm = cm | s.str.contains(t, na=False)
+                mask_any = mask_any | cm
+            view = view[mask_any]
+
+if pick_dates and "event_time" in view.columns:
+    dt = pd.to_datetime(view["event_time"], errors="coerce")
+    if isinstance(pick_dates, (list, tuple)) and len(pick_dates) == 2:
+        d0, d1 = pick_dates
+    else:
+        d0 = d1 = pick_dates
+    view = view[(dt >= pd.Timestamp(d0)) & (dt <= pd.Timestamp(d1) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))]
+
+if "ev" in view.columns and 'pick_ev_min' in st.session_state:
+    view = view[pd.to_numeric(view["ev"], errors="coerce") >= float(st.session_state['pick_ev_min'])]
+
+if "odds" in view.columns and st.session_state.get('only_with_odds'):
+    mask = view["odds"].notna() & (view["odds"].astype(str).str.strip() != "")
+    view = view[mask]
+
+if any(c in view.columns for c in ("line","line_value","handicap")) and st.session_state.get('only_with_lines'):
+    cols = [c for c in ("line","line_value","handicap") if c in view.columns]
+    m = False
+    for c in cols: m = m | view[c].notna()
+    view = view[m]
+
+if "status" in view.columns and st.session_state.get('hide_closed', True):
+    closed_like = {"closed","settled","void","canceled","cancelled","graded"}
+    view = view[~view["status"].astype(str).str.lower().isin(closed_like)]
+
+if "market" in view.columns and st.session_state.get('show_props_only'):
+    non_props = {"spread","total","moneyline","ml"}
+    view = view[~view["market"].astype(str).str.lower().isin(non_props)]
+
+# ======================= Display =======================
+cols_all  = ["event_time","__season_label","season","week","market","game_id",
+             "home_team","away_team","side","book","line","odds","dec_odds","imp"]
+cols_show = [c for c in cols_all if c in view.columns]
+
+st.subheader("All books")
+st.dataframe(view[cols_show] if cols_show else view, use_container_width=True)
+
+st.download_button(
+    "Ã¢Â¬â€¡Ã¯Â¸Â Download filtered lines.csv",
+    data=view.to_csv(index=False).encode("utf-8"),
+    file_name="lines_filtered.csv",
+    mime="text/csv"
+)
+
+with st.expander("Ã°Å¸Ââ€  Best price per game & side"):
+    if "dec_odds" not in view.columns:
+        st.info("No odds found to compute best prices.")
+    else:
+        group_keys = [k for k in ["__season_label","season","week","game_id","market"] if k in view.columns]
+        if "side" in view.columns: group_keys += ["side"]
+        if not group_keys:
+            st.info("Not enough columns to group best prices.")
+        else:
+            best_idx = view.groupby(group_keys)["dec_odds"].idxmax()
+            best = view.loc[best_idx].copy().reset_index(drop=True)
+            best = best.rename(columns={"book":"best_book","odds":"best_odds","dec_odds":"best_dec","imp":"best_imp"})
+            grp = [k for k in group_keys if k != "side"]
+            if grp and "best_imp" in best.columns:
+                hnew = best.groupby(grp, dropna=False)["best_imp"].sum().reset_index(name="sum_imp")
+                best = best.merge(hnew, on=grp, how="left")
+                best["hnew_pct"] = (best["sum_imp"] - 1.0) * 100.0
+            cols_best = [c for c in ["event_time","__season_label","season","week","market","game_id","side",
+                                     "best_book","best_odds","best_dec","best_imp","hnew_pct"] if c in best.columns]
+            st.dataframe(best[cols_best] if cols_best else best, use_container_width=True)
+
+with st.expander("Ã¢Å¡â„¢Ã¯Â¸Â Diagnostics"):
+    st.write("REPO:", REPO)
+    st.write("DB_DIR candidates:", [str(p) for p in DB_CANDIDATES])
+    st.write("Using DB_DIR:", DB_DIR)
+    st.write("LINES_PATH:", LINES_PATH, "exists?", LINES_PATH.exists(),
+             "size:", LINES_PATH.stat().st_size if LINES_PATH.exists() else 0)
+    try:
+        st.caption("source preview")
+        st.dataframe(pd.read_csv(LINES_PATH, nrows=8), use_container_width=True)
+    except Exception as e:
+        st.error(f"Preview read error: {e}")
+
+
+
+

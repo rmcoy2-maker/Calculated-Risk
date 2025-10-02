@@ -1,0 +1,184 @@
+from __future__ import annotations
+# -*- coding: utf-8 -*-
+# 01 Line Shop — clean, with robust parlay_ui import
+
+
+import os, sys, time
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="01 Line Shop", page_icon="📈", layout="wide")
+
+# ------- Make sure "app" is importable (only if needed) -------
+try:
+    from app.utils.parlay_ui import selectable_odds_table  # type: ignore
+except ModuleNotFoundError:
+    here = Path(__file__).resolve()
+    for up in (here,) + tuple(here.parents):
+        probe = up / "serving_ui" / "app" / "__init__.py"
+        if probe.exists():
+            base = str((up / "serving_ui").resolve())
+            if base not in sys.path:
+                sys.path.insert(0, base)
+            break
+    try:
+        from app.utils.parlay_ui import selectable_odds_table  # type: ignore
+    except Exception:
+        # last-resort no-op to keep the page running
+        def selectable_odds_table(*a, **k):  # type: ignore
+            st.warning("parlay_ui not available — selection table disabled.", icon="⚠️")
+
+# ------- Paths -------
+def _repo_root() -> Path:
+    env = os.environ.get("EDGE_FINDER_ROOT", "").strip()
+    if env and Path(env).exists():
+        return Path(env)
+    here = Path(__file__).resolve()
+    for up in [here] + list(here.parents):
+        if (up / "exports").exists():
+            return up
+    return Path.cwd()
+
+REPO = _repo_root()
+EXPORTS = (REPO / "exports"); EXPORTS.mkdir(parents=True, exist_ok=True)
+CSV = EXPORTS / "lines_live.csv"
+MODEL = EXPORTS / "model_probs.csv"
+
+# ------- Odds math -------
+def american_to_decimal(odds):
+    try:
+        o = float(odds)
+    except:
+        return np.nan
+    if o > 0:  return 1.0 + o / 100.0
+    if o < 0:  return 1.0 + 100.0 / abs(o)
+    return np.nan
+
+def implied_prob(odds):
+    try:
+        o = float(odds)
+    except:
+        return np.nan
+    if o > 0:  return 100.0 / (o + 100.0)
+    if o < 0:  return abs(o) / (abs(o) + 100.0)
+    return np.nan
+
+def ev_percent(p, dec):
+    if pd.isna(p) or pd.isna(dec) or dec <= 1.0: return np.nan
+    b = dec - 1.0
+    return 100.0 * (p * b - (1.0 - p))
+
+def ev_dollars(p, dec, stake):
+    if pd.isna(p) or pd.isna(dec) or dec <= 1.0: return np.nan
+    b = dec - 1.0
+    return stake * (p * b - (1.0 - p))
+
+def kelly_fraction(p, dec):
+    if pd.isna(p) or pd.isna(dec) or dec <= 1.0: return 0.0
+    b = dec - 1.0
+    f = (p * b - (1.0 - p)) / b
+    return max(0.0, float(f))
+
+def best_rows(df):
+    d = df.copy()
+    d["Decimal"] = d["American"].apply(american_to_decimal)
+    d["_rank"] = d.groupby(["game_id","market","selection"])["Decimal"].rank(ascending=False, method="first")
+    return d[d["_rank"] == 1.0].drop(columns=["_rank"])
+
+# ------- IO -------
+def load_model_probs():
+    if not MODEL.exists() or MODEL.stat().st_size == 0: return None
+    mp = pd.read_csv(MODEL)
+    mp.columns = [c.lower().strip() for c in mp.columns]
+    need = {"game_id","market","selection","prob"}
+    if not need.issubset(mp.columns):
+        st.warning(f"model_probs.csv missing {sorted(list(need - set(mp.columns)))}; EV/Kelly disabled.")
+        return None
+    mp["prob"] = pd.to_numeric(mp["prob"], errors="coerce").clip(0,1)
+    return mp.dropna(subset=["prob"])
+
+def read_lines():
+    if not CSV.exists() or CSV.stat().st_size == 0:
+        return pd.DataFrame()
+    df = pd.read_csv(CSV)
+    cols = ["pulled_ts","game_id","commence_time","home","away","book","market","selection","price_american","point"]
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        st.error(f"lines_live.csv missing columns: {missing}")
+        return pd.DataFrame()
+    df = df.rename(columns={"price_american":"American","point":"Line/Point"})
+    df["American"] = pd.to_numeric(df["American"], errors="coerce")
+    df["commence_time"] = pd.to_datetime(df["commence_time"], errors="coerce")
+    return df
+
+# ------- UI -------
+st.title("Line Shop")
+_lines_p = EXPORTS / "lines_live.csv"
+st.caption(f"lines_live.csv: {'present' if _lines_p.exists() else 'missing'} · exports: {EXPORTS}")
+
+st.sidebar.header("Filters")
+team_q = st.sidebar.text_input("Team search (home/away contains)")
+market = st.sidebar.selectbox("Market", ["all","h2h","spreads","totals"], index=0)
+min_books = st.sidebar.number_input("Min # of books per selection", 1, 20, 1, 1)
+st.sidebar.header("EV & Kelly")
+stake_display = st.sidebar.number_input("EV display stake ($)", 1, 10000, 100, 25)
+show_pos_ev = st.sidebar.toggle("Show only +EV (needs model_probs)", value=False)
+min_ev_pct = st.sidebar.number_input("Min EV %", value=0.0, step=0.5)
+bankroll = st.sidebar.number_input("Bankroll ($)", 0, 10000000, 1000, 50)
+kelly_cap = st.sidebar.number_input("Kelly fraction cap (0..1)", 0.0, 1.0, 0.25, 0.05)
+
+df = read_lines()
+if df.empty:
+    st.warning("No live odds found. Populate exports/lines_live.csv.")
+    st.stop()
+
+if team_q:
+    s = team_q.strip().lower()
+    df = df[df["home"].str.lower().str.contains(s) | df["away"].str.lower().str.contains(s)]
+if market != "all":
+    df = df[df["market"] == market]
+
+books = sorted(df["book"].dropna().unique().tolist())
+chosen_books = st.sidebar.multiselect("Books", books, default=books)
+if chosen_books:
+    df = df[df["book"].isin(chosen_books)]
+
+counts = df.groupby(["game_id","market","selection"])["book"].nunique().rename("#Books")
+df = df.merge(counts, on=["game_id","market","selection"], how="left")
+df = df[df["#Books"] >= int(min_books)]
+
+mp = load_model_probs()
+if mp is not None:
+    df = df.merge(mp, on=["game_id","market","selection"], how="left")
+    df.rename(columns={"prob":"Model Prob"}, inplace=True)
+
+df["Decimal"] = df["American"].apply(american_to_decimal)
+df["Impl. Prob (Odds)"] = df["American"].apply(implied_prob)
+if "Model Prob" in df.columns:
+    df["EV %"] = df.apply(lambda r: ev_percent(r["Model Prob"], r["Decimal"]), axis=1)
+    df[f"EV @ ${stake_display}"] = df.apply(lambda r: ev_dollars(r.get("Model Prob"), r["Decimal"], stake_display), axis=1)
+    df["Kelly f"] = df.apply(lambda r: kelly_fraction(r.get("Model Prob"), r["Decimal"]), axis=1)
+    df["Kelly stake ($)"] = (df["Kelly f"].clip(lower=0) * kelly_cap * bankroll).round(2)
+else:
+    df["EV %"] = df[f"EV @ ${stake_display}"] = df["Kelly f"] = df["Kelly stake ($)"] = np.nan
+
+if "EV %" in df.columns and show_pos_ev:
+    df = df[df["EV %"].fillna(-999) >= float(min_ev_pct)]
+
+base_cols = ["commence_time","home","away","market","selection","book","American","Line/Point","Decimal","Impl. Prob (Odds)","#Books"]
+ev_cols = ["Model Prob","EV %",f"EV @ ${stake_display}","Kelly f","Kelly stake ($)"] if "Model Prob" in df.columns else []
+show_cols = [c for c in base_cols + ev_cols if c in df.columns]
+
+tab_best, tab_all = st.tabs(["Quick Odds Shop (Best Price)","All Quotes"])
+with tab_best:
+    best = best_rows(df)
+    st.caption("Best price per (game_id, market, selection).")
+    st.dataframe(best[show_cols], hide_index=True, use_container_width=True)
+with tab_all:
+    st.dataframe(df[show_cols], hide_index=True, use_container_width=True)
+
+st.markdown("---")
+st.subheader("Add selections to Parlay Cart")
+selectable_odds_table(df, page_key="line_shop", page_name="01_Line_Shop")

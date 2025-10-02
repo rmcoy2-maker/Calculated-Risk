@@ -1,0 +1,370 @@
+import os
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+REPO = Path(r"C:\Projects\edge-finder")
+CSV  = REPO / "exports" / "lines_live.csv"
+MODEL = REPO / "exports" / "model_probs.csv"  # expected columns: game_id,market,selection,prob (0..1)
+st.title("Line Shop")
+
+# ---------- helpers ----------
+def american_to_decimal(odds):
+    try:
+        o = float(odds)
+    except:
+        return np.nan
+    if o > 0:
+        return 1.0 + (o / 100.0)
+    elif o < 0:
+        return 1.0 + (100.0 / abs(o))
+    return np.nan
+
+def implied_prob(odds):
+    try:
+        o = float(odds)
+    except:
+        return np.nan
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    elif o < 0:
+        return abs(o) / (abs(o) + 100.0)
+    return np.nan
+
+def ev_percent(p, dec):
+    # EV% of stake: 100 * ( p*b - (1-p) ), b = dec-1
+    if pd.isna(p) or pd.isna(dec) or dec <= 1.0:
+        return np.nan
+    b = dec - 1.0
+    return 100.0 * (p*b - (1.0 - p))
+
+def kelly_fraction(p, dec):
+    # Full Kelly fraction of bankroll, clipped to [0,1]
+    if pd.isna(p) or pd.isna(dec) or dec <= 1.0:
+        return np.nan
+    b = dec - 1.0
+    f = (p*b - (1.0 - p)) / b
+    return max(0.0, float(f))
+
+def best_rows(df):
+    d = df.copy()
+    d["decimal"] = d["price_american"].apply(american_to_decimal)
+    d["_rank"] = d.groupby(["game_id","market","selection"])["decimal"].rank(ascending=False, method="first")
+    return d[d["_rank"] == 1.0].drop(columns=["_rank"])
+
+def load_model_probs():
+    if MODEL.exists():
+        mp = pd.read_csv(MODEL)
+        need = ["game_id","market","selection","prob"]
+        lower = [c.lower() for c in mp.columns]
+        missing = [c for c in need if c not in lower]
+        if missing:
+            st.warning(f"model_probs.csv missing columns: {missing}. Expected {need}. EV/Kelly disabled.")
+            return None
+        mp.columns = [c.lower() for c in mp.columns]
+        mp = mp[["game_id","market","selection","prob"]].copy()
+        mp["prob"] = pd.to_numeric(mp["prob"], errors="coerce")
+        mp = mp.dropna(subset=["prob"])
+        mp["prob"] = mp["prob"].clip(0, 1)
+        return mp
+    else:
+        return None
+
+# ---------- UI: controls ----------
+left, mid, right = st.columns([1, 1, 2])
+with left:
+    if st.button("Refresh odds file hint", key="ls_refresh"):
+        st.toast("Run pull_lines_now.ps1 or wait for the 30-min scheduler.", icon="⏱️")
+with mid:
+    st.caption("Data: The Odds API. Configure ODDS_API_KEY in .env.")
+
+st.sidebar.header("Filters")
+team_q = st.sidebar.text_input("Team search (home or away contains)", key="ls_teamq")
+market_opt = st.sidebar.selectbox("Market", options=["all", "h2h", "spreads", "totals"], index=0, key="ls_market")
+min_books = st.sidebar.number_input("Min # of books per selection", min_value=1, value=1, step=1, key="ls_minbooks")
+
+ev_stake = st.sidebar.number_input("EV display stake ($)", min_value=1, value=100, step=25, key="ls_evstake")
+show_pos_ev = st.sidebar.toggle("Show only +EV", value=False, key="ls_posonly")
+min_ev = st.sidebar.number_input("Min EV %", value=0.0, step=0.5, key="ls_minev")
+
+st.sidebar.header("Kelly inputs")
+kelly_bankroll = st.sidebar.number_input("Bankroll ($)", min_value=0, value=1000, step=50, key="ls_bankroll")
+kelly_frac_user = st.sidebar.number_input("Kelly fraction (0..1)", min_value=0.0, max_value=1.0, value=0.25, step=0.05, key="ls_kfrac")
+
+# ---------- Load odds ----------
+if not CSV.exists():
+    st.warning("No live odds file yet. Run pull_lines_now.ps1 once.")
+    st.stop()
+
+raw = pd.read_csv(CSV)
+if raw.empty:
+    st.info("Live odds file is present but empty. Try again later.")
+    st.stop()
+
+need_cols = ["pulled_ts", "game_id", "commence_time", "home", "away", "book", "market", "selection", "price_american", "point"]
+missing = [c for c in need_cols if c not in raw.columns]
+if missing:
+    st.error(f"Missing columns in lines_live.csv: {missing}")
+    st.stop()
+
+df = raw.copy()
+df["price_american"] = pd.to_numeric(df["price_american"], errors="coerce")
+df["commence_time"] = pd.to_datetime(df["commence_time"], errors="coerce")
+
+# Team filter
+if team_q:
+    s = team_q.strip().lower()
+    df = df[df["home"].str.lower().str.contains(s) | df["away"].str.lower().str.contains(s)]
+
+# Market filter
+if market_opt != "all":
+    df = df[df["market"] == market_opt]
+
+# Book whitelist
+books = sorted(df["book"].dropna().unique().tolist())
+sel_books = st.sidebar.multiselect("Books", options=books, default=books, key="ls_books")
+if sel_books:
+    df = df[df["book"].isin(sel_books)]
+
+# Count books per selection
+counts = df.groupby(["game_id", "market", "selection"])["book"].nunique().rename("n_books")
+df = df.merge(counts, on=["game_id", "market", "selection"], how="left")
+df = df[df["n_books"] >= int(min_books)]
+
+# Merge model probabilities
+mp = load_model_probs()
+if mp is None:
+    st.info("EV/Kelly: Provide exports\\model_probs.csv with columns [game_id, market, selection, prob] to enable EV and Kelly calculations.")
+else:
+    df = df.merge(mp, on=["game_id", "market", "selection"], how="left")
+
+# ---------- Tabs ----------
+tab_best, tab_all = st.tabs(["Quick Odds Shop (Best Price) — with EV/Kelly", "All Quotes — with EV/Kelly"])
+
+with tab_best:
+    st.caption("Shows the single best price per selection across chosen books. EV% and Kelly shown if model probs are present.")
+    if df.empty:
+        st.info("No rows after filters.")
+    else:
+        best = best_rows(df)
+        best["decimal"] = best["price_american"].apply(american_to_decimal)
+        best["implied_prob"] = best["price_american"].apply(implied_prob)
+
+        # Ensure EV/Kelly/model columns always exist
+        best["ev_pct"] = np.nan
+        best["ev_$"] = np.nan
+        best["model_prob"] = np.nan
+        best["kelly_f"] = np.nan
+        best["kelly_$"] = np.nan
+
+        if "prob" in best.columns:
+            best["ev_pct"] = best.apply(lambda r: ev_percent(r.get("prob", np.nan), r.get("decimal", np.nan)), axis=1)
+            best["ev_$"] = (best["ev_pct"].fillna(0.0) / 100.0) * float(ev_stake)
+            best["model_prob"] = best["prob"] * 100.0
+            best["kelly_f"] = best.apply(lambda r: kelly_fraction(r.get("prob", np.nan), r.get("decimal", np.nan)), axis=1)
+            best["kelly_$"] = best["kelly_f"].fillna(0.0) * float(kelly_frac_user) * float(kelly_bankroll)
+
+        # Build a stable UID for selection
+        best["uid"] = (
+            best["game_id"].astype(str) + "|" +
+            best["market"].astype(str) + "|" +
+            best["selection"].astype(str) + "|" +
+            best["book"].astype(str) + "|" +
+            best["price_american"].astype(str) + "|" +
+            best["point"].astype(str)
+        )
+
+        show = best.assign(
+            matchup=lambda x: x["away"] + " @ " + x["home"],
+        )[[
+            "uid",
+            "commence_time", "matchup", "market", "selection", "book",
+            "price_american", "point", "decimal", "implied_prob", "n_books",
+            "model_prob", "ev_pct", "ev_$", "kelly_f", "kelly_$"
+        ]].sort_values(["commence_time", "matchup", "market", "selection"])
+
+        # Optional +EV filter
+        if show_pos_ev and "ev_pct" in show.columns:
+            show = show[show["ev_pct"].fillna(-1) >= float(min_ev)]
+
+        # Selector to add to bet slip
+        st.subheader("Pick rows to add to Bet Slip")
+        options = (
+            show
+            .assign(label=lambda x: x["selection"] + " @ " + x["book"] + " (" + x["market"] + ", " + x["price_american"].astype(str) + ")")
+            [["uid", "label"]]
+            .values.tolist()
+        )
+        label_by_uid = {u: lbl for u, lbl in options}
+        selected_uids = st.multiselect(
+            "Select best-price rows",
+            options=[u for u, _ in options],
+            format_func=lambda u: label_by_uid.get(u, u),
+            key="ls_select_best"
+        )
+
+        # Display table
+        ev_col_label = f"EV @ ${int(ev_stake)}"
+        st.dataframe(
+            show.drop(columns=["uid"]).reset_index(drop=True),
+            use_container_width=True,
+            column_config={
+                "commence_time": st.column_config.DatetimeColumn("Kickoff (UTC)"),
+                "price_american": st.column_config.NumberColumn("American"),
+                "point": st.column_config.NumberColumn("Line/Point"),
+                "decimal": st.column_config.NumberColumn("Decimal", format="%.3f"),
+                "implied_prob": st.column_config.NumberColumn("Impl. Prob (Odds)", format="%.1f%%"),
+                "n_books": st.column_config.NumberColumn("#Books"),
+                "model_prob": st.column_config.NumberColumn("Model Prob", format="%.1f%%"),
+                "ev_pct": st.column_config.NumberColumn("EV %", format="%.1f%%"),
+                "ev_$": st.column_config.NumberColumn(ev_col_label, format="$%.2f"),
+                "kelly_f": st.column_config.NumberColumn("Kelly f", format="%.3f"),
+                "kelly_$": st.column_config.NumberColumn("Kelly stake ($)", format="$%.2f"),
+            }
+        )
+
+        # Add to Bet Slip
+        if st.button("➕ Add selected to Bet Slip", use_container_width=True, key="btn_add_slip"):
+            if "bet_slip" not in st.session_state:
+                st.session_state["bet_slip"] = []
+            # add unique
+            existing = {d.get("uid") for d in st.session_state["bet_slip"]}
+            rows_to_add = best[best["uid"].isin(selected_uids)]
+            for _, r in rows_to_add.iterrows():
+                if r["uid"] in existing:
+                    continue
+                st.session_state["bet_slip"].append({
+                    "uid": r["uid"],
+                    "commence_time": r["commence_time"],
+                    "game_id": r["game_id"],
+                    "matchup": f"{r['away']} @ {r['home']}",
+                    "market": r["market"],
+                    "selection": r["selection"],
+                    "book": r["book"],
+                    "price_american": r["price_american"],
+                    "point": r["point"],
+                    "decimal": r["decimal"],
+                    "model_prob_%": float(r["prob"]*100.0) if "prob" in r and pd.notna(r["prob"]) else np.nan,
+                    "ev_%": float(r["ev_pct"]) if pd.notna(r["ev_pct"]) else np.nan,
+                    "kelly_f": float(r["kelly_f"]) if pd.notna(r["kelly_f"]) else np.nan,
+                    "kelly_$": float(r["kelly_$"]) if pd.notna(r["kelly_$"]) else np.nan,
+                })
+            st.success(f"Added {len(rows_to_add)} row(s) to Bet Slip.")
+
+with tab_all:
+    st.caption("Every quote from selected books, best price flagged. EV% and Kelly shown when model probs are available.")
+    if df.empty:
+        st.info("No rows after filters.")
+    else:
+        tmp = df.copy()
+        tmp["decimal"] = tmp["price_american"].apply(american_to_decimal)
+        tmp["_best_dec"] = tmp.groupby(["game_id", "market", "selection"])["decimal"].transform("max")
+        tmp["best_flag"] = np.where(np.isclose(tmp["decimal"], tmp["_best_dec"], equal_nan=False), "✅", "")
+        tmp["implied_prob"] = tmp["price_american"].apply(implied_prob)
+
+        # Ensure EV/Kelly/model columns always exist
+        tmp["ev_pct"] = np.nan
+        tmp["ev_$"] = np.nan
+        tmp["model_prob"] = np.nan
+        tmp["kelly_f"] = np.nan
+        tmp["kelly_$"] = np.nan
+
+        if "prob" in tmp.columns:
+            tmp["ev_pct"] = tmp.apply(lambda r: ev_percent(r.get("prob", np.nan), r.get("decimal", np.nan)), axis=1)
+            tmp["ev_$"] = (tmp["ev_pct"].fillna(0.0) / 100.0) * float(ev_stake)
+            tmp["model_prob"] = tmp["prob"] * 100.0
+            tmp["kelly_f"] = tmp.apply(lambda r: kelly_fraction(r.get("prob", np.nan), r.get("decimal", np.nan)), axis=1)
+            tmp["kelly_$"] = tmp["kelly_f"].fillna(0.0) * float(kelly_frac_user) * float(kelly_bankroll)
+
+        tmp = tmp.assign(
+            matchup=lambda x: x["away"] + " @ " + x["home"]
+        )
+
+        cols = [
+            "commence_time", "matchup", "market", "selection", "book", "best_flag",
+            "price_american", "point", "decimal", "implied_prob", "n_books",
+            "model_prob", "ev_pct", "ev_$", "kelly_f", "kelly_$"
+        ]
+
+        # Optional +EV filter
+        if show_pos_ev and "ev_pct" in tmp.columns:
+            tmp = tmp[tmp["ev_pct"].fillna(-1) >= float(min_ev)]
+
+        ev_col_label = f"EV @ ${int(ev_stake)}"
+        st.dataframe(
+            tmp[cols].sort_values(["commence_time", "matchup", "market", "selection", "book"]).reset_index(drop=True),
+            use_container_width=True,
+            column_config={
+                "commence_time": st.column_config.DatetimeColumn("Kickoff (UTC)"),
+                "best_flag": st.column_config.TextColumn("Best"),
+                "price_american": st.column_config.NumberColumn("American"),
+                "point": st.column_config.NumberColumn("Line/Point"),
+                "decimal": st.column_config.NumberColumn("Decimal", format="%.3f"),
+                "implied_prob": st.column_config.NumberColumn("Impl. Prob (Odds)", format="%.1f%%"),
+                "n_books": st.column_config.NumberColumn("#Books"),
+                "model_prob": st.column_config.NumberColumn("Model Prob", format="%.1f%%"),
+                "ev_pct": st.column_config.NumberColumn("EV %", format="%.1f%%"),
+                "ev_$": st.column_config.NumberColumn(ev_col_label, format="$%.2f"),
+                "kelly_f": st.column_config.NumberColumn("Kelly f", format="%.3f"),
+                "kelly_$": st.column_config.NumberColumn("Kelly stake ($)", format="$%.2f"),
+            }
+        )
+
+# ---------- Bet Slip ----------
+st.markdown("---")
+st.header("🧾 Bet Slip")
+
+if "bet_slip" not in st.session_state or len(st.session_state["bet_slip"]) == 0:
+    st.info("Your Bet Slip is empty. Use the Best tab to select rows and click “Add to Bet Slip”.")
+else:
+    slip_df = pd.DataFrame(st.session_state["bet_slip"]).copy()
+
+    # Allow manual edits to stake
+    st.caption("You can edit Kelly stake suggestions below before exporting.")
+    edited = st.data_editor(
+        slip_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "commence_time": st.column_config.DatetimeColumn("Kickoff (UTC)"),
+            "price_american": st.column_config.NumberColumn("American"),
+            "decimal": st.column_config.NumberColumn("Decimal", format="%.3f"),
+            "model_prob_%": st.column_config.NumberColumn("Model Prob", format="%.1f%%"),
+            "ev_%": st.column_config.NumberColumn("EV %", format="%.1f%%"),
+            "kelly_f": st.column_config.NumberColumn("Kelly f", format="%.3f"),
+            "kelly_$": st.column_config.NumberColumn("Kelly stake ($)", format="$%.2f"),
+        },
+        hide_index=True,
+        key="slip_editor"
+    )
+
+    # Replace session_state with edited version
+    st.session_state["bet_slip"] = edited.to_dict(orient="records")
+
+    # Totals
+    total_kelly = float(pd.to_numeric(edited.get("kelly_$", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    st.subheader(f"Total suggested stake: ${total_kelly:,.2f}")
+
+    # Actions
+    col_a, col_b, col_c = st.columns([1,1,2])
+    with col_a:
+        if st.button("🗑️ Clear Bet Slip", use_container_width=True, key="btn_clear_slip"):
+            st.session_state["bet_slip"] = []
+            st.success("Cleared Bet Slip.")
+            st.experimental_rerun()
+    with col_b:
+        # Download CSV
+        out_cols = ["commence_time","game_id","matchup","market","selection","book","price_american","point","decimal","model_prob_%","ev_%","kelly_f","kelly_$"]
+        out_df = edited[out_cols].copy() if set(out_cols).issubset(edited.columns) else edited.copy()
+        csv_bytes = out_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Download Bet Slip (CSV)",
+            data=csv_bytes,
+            file_name="bet_slip.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+st.caption("Tip: Provide exports\\model_probs.csv with columns [game_id,market,selection,prob] to enable EV% and Kelly.")
+

@@ -1,0 +1,266 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+import os, re, numpy as np, pandas as pd
+import datetime as dt
+import streamlit.components.v1 as components
+try:
+    from lib.io_paths import autoload_edges, autoload_lines, clear_loader_cache
+except Exception:
+
+    def _read_csv(path: str) -> pd.DataFrame:
+        try:
+            return pd.read_csv(path, low_memory=False, encoding='utf-8-sig')
+        except Exception:
+            return pd.DataFrame()
+
+    def autoload_edges(with_caption: bool=False):
+        for name in ['exports/edges_graded_full.csv', 'exports/edges_master.csv', 'exports/edges_graded.csv', 'exports/edges.csv']:
+            if os.path.exists(name) and os.path.getsize(name) > 256:
+                df = _read_csv(name)
+                if with_caption:
+                    mtime = dt.datetime.fromtimestamp(os.path.getmtime(name))
+                    st.caption(f'Loaded: {name} · rows={len(df):,} · cols={len(df.columns)} · mtime={mtime:%Y-%m-%d %H:%M:%S}')
+                return (df, name, os.path.abspath('exports'))
+        return (pd.DataFrame(), None, os.path.abspath('exports'))
+
+    def autoload_lines(with_caption: bool=False):
+        for name in ['exports/lines_live.csv', 'exports/live_lines.csv']:
+            if os.path.exists(name) and os.path.getsize(name) > 64:
+                df = _read_csv(name)
+                if with_caption:
+                    mtime = dt.datetime.fromtimestamp(os.path.getmtime(name))
+                    st.caption(f'Live lines: {name} · rows={len(df):,} · cols={len(df.columns)} · mtime={mtime:%Y-%m-%d %H:%M:%S}')
+                return (df, name, os.path.abspath('exports'))
+        if with_caption:
+            st.caption('Live lines: —')
+        return (pd.DataFrame(), None, os.path.abspath('exports'))
+
+    def clear_loader_cache():
+        pass
+st.set_page_config(page_title='All Picks Explorer', page_icon='🧭', layout='wide')
+
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+st.title('All Picks Explorer')
+with st.sidebar:
+    auto = st.toggle('Auto-refresh every 30s', value=True)
+if auto:
+    components.html('<script>setTimeout(function(){location.reload();},30000);</script>', height=0, width=0)
+if st.button('Refresh data', type='primary'):
+    try:
+        clear_loader_cache()
+    except Exception:
+        pass
+    st.rerun()
+edges, edges_path, root_path = autoload_edges(with_caption=True)
+lines, lines_path, _ = autoload_lines(with_caption=True)
+if edges.empty and lines.empty:
+    st.stop()
+
+def _as_str(s: pd.Series | None) -> pd.Series:
+    if s is None:
+        return pd.Series(dtype='object')
+    return s.map(lambda x: '' if pd.isna(x) else str(x))
+
+def american_to_decimal(odds: pd.Series) -> pd.Series:
+    o = pd.to_numeric(odds, errors='coerce')
+    d = pd.Series(np.nan, index=o.index, dtype='float64')
+    pos, neg = (o > 0, o < 0)
+    d.loc[pos] = 1.0 + o.loc[pos] / 100.0
+    d.loc[neg] = 1.0 + 100.0 / o.loc[neg].abs()
+    return d
+
+def implied_prob(odds: pd.Series) -> pd.Series:
+    o = pd.to_numeric(odds, errors='coerce')
+    p = pd.Series(np.nan, index=o.index, dtype='float64')
+    pos, neg = (o > 0, o < 0)
+    p.loc[pos] = 100.0 / (o.loc[pos] + 100.0)
+    p.loc[neg] = -o.loc[neg] / (-o.loc[neg] + 100.0)
+    return p
+
+def ev_per_dollar(p_win: pd.Series, odds: pd.Series) -> pd.Series:
+    p = pd.to_numeric(p_win, errors='coerce')
+    dec = american_to_decimal(odds)
+    ev = p * (dec - 1.0) - (1.0 - p)
+    ev[p.isna() | dec.isna() | (dec <= 1.0)] = np.nan
+    return ev
+
+def to_nick(s: str) -> str:
+    if not isinstance(s, str):
+        return ''
+    parts = re.findall('[A-Za-z0-9]+', s.title())
+    return parts[-1] if parts else ''
+
+def norm_market(s: pd.Series) -> pd.Series:
+    v = _as_str(s).str.strip().str.lower()
+    return np.select([v.isin(['h2h', 'ml', 'moneyline', 'money line']), v.isin(['spread', 'spreads', 'point spread', 'ps']), v.isin(['total', 'totals', 'over/under', 'ou', 'o/u'])], ['H2H', 'SPREADS', 'TOTALS'], default=v.str.upper())
+
+def build_gid(date_col: pd.Series, away_col: pd.Series, home_col: pd.Series) -> pd.Series:
+    d = _as_str(date_col).str[:10].str.replace('-', '', regex=False)
+    a = _as_str(away_col).map(to_nick).str.upper().str.replace('[^A-Z0-9]', '', regex=True)
+    h = _as_str(home_col).map(to_nick).str.upper().str.replace('[^A-Z0-9]', '', regex=True)
+    return (d + '_' + a.str[:12] + '_AT_' + h.str[:12]).str.strip()
+
+def norm_date_naive(s: pd.Series) -> pd.Series:
+    """Parse timestamps (aware or naive) -> UTC -> drop tz -> normalize to midnight."""
+    dtv = pd.to_datetime(s, errors='coerce', utc=True)
+    return dtv.dt.tz_convert(None).dt.normalize()
+e = edges.copy()
+for need in ['game_id', 'market', 'side', 'odds']:
+    if need not in e.columns:
+        e[need] = np.nan
+_date_raw = e.get('_DateISO') if '_DateISO' in e.columns else e.get('Date')
+e['_date'] = norm_date_naive(_date_raw)
+if 'game_id' not in e.columns or e['game_id'].isna().all() or _as_str(e['game_id']).eq('').all():
+    e['game_id'] = build_gid(_date_raw, e.get('_away_team', e.get('away')), e.get('_home_team', e.get('home')))
+e['market_norm'] = norm_market(e['market'])
+e['side_norm'] = _as_str(e['side']).map(to_nick)
+prob_cols = [c for c in ['p_model', 'p_win', 'model_prob', 'prob'] if c in e.columns]
+if prob_cols:
+    e['p_model_use'] = pd.to_numeric(e[prob_cols[0]], errors='coerce').clip(0, 1)
+else:
+    e['p_model_use'] = np.nan
+e['implied_p(odds)'] = implied_prob(e['odds'])
+e['ev/$1'] = ev_per_dollar(e['p_model_use'], e['odds'])
+e['p_edge'] = e['p_model_use'] - e['implied_p(odds)']
+if e['_date'].notna().any():
+    st.caption(f"Date range in file: {e['_date'].min():%Y-%m-%d} → {e['_date'].max():%Y-%m-%d}")
+L = lines.copy()
+house = pd.DataFrame()
+if not L.empty:
+    L['_date'] = norm_date_naive(L.get('commence_time'))
+    L['game_id_join'] = build_gid(L['_date'], L.get('away'), L.get('home'))
+    L['market_norm'] = norm_market(L.get('market', pd.Series()))
+    L['side_norm'] = _as_str(L.get('selection')).map(to_nick)
+    L['house_odds'] = pd.to_numeric(L.get('price_american'), errors='coerce')
+    L['house_book'] = _as_str(L.get('book'))
+    L['_dec'] = american_to_decimal(L['house_odds'])
+    agg = L.dropna(subset=['game_id_join', 'market_norm', 'side_norm', 'house_odds']).sort_values('_dec', ascending=False).drop_duplicates(subset=['game_id_join', 'market_norm', 'side_norm'], keep='first')
+    house = agg[['game_id_join', 'market_norm', 'side_norm', 'house_odds', 'house_book']].rename(columns={'game_id_join': 'game_id'})
+if not L.empty and (not house.empty):
+    live_keys = house[['game_id', 'market_norm', 'side_norm']].drop_duplicates()
+    edge_keys = e[['game_id', 'market_norm', 'side_norm']].drop_duplicates()
+    missing = live_keys.merge(edge_keys, on=['game_id', 'market_norm', 'side_norm'], how='left', indicator=True).query("_merge=='left_only'").drop(columns='_merge')
+    if not missing.empty:
+        ctx = L[['_date', 'game_id_join', 'home', 'away', 'market_norm', 'side_norm']].drop_duplicates(subset=['game_id_join', 'market_norm', 'side_norm']).rename(columns={'game_id_join': 'game_id'})
+        scaf = missing.merge(ctx, on=['game_id', 'market_norm', 'side_norm'], how='left').assign(market=lambda d: d['market_norm'], side=lambda d: d['side_norm'], odds=np.nan, **{'implied_p(odds)': np.nan, 'p_model_use': np.nan, 'p_edge': np.nan, 'ev/$1': np.nan})
+        today_scaf = pd.Timestamp.now(tz='UTC').tz_convert(None).normalize()
+        scaf['_date'] = norm_date_naive(scaf.get('_date')).fillna(today_scaf)
+        scaf_aligned = scaf.reindex(columns=e.columns, fill_value=np.nan)
+        e = pd.concat([e, scaf_aligned], ignore_index=True, sort=False)
+view = e.merge(house, on=['game_id', 'market_norm', 'side_norm'], how='left', validate='m:1')
+with st.sidebar:
+    st.header('Filters')
+    sport = st.multiselect('Sport', sorted(_as_str(view.get('sport', pd.Series(dtype=str))).str.lower().dropna().unique()))
+    markets = st.multiselect('Markets', sorted(view['market_norm'].dropna().unique()))
+    min_ev = st.slider('Min EV per $1', -1.0, 1.0, 0.0, 0.01)
+    min_edge = st.slider('Min prob edge', -0.5, 0.5, 0.0, 0.01)
+    likes_only = st.toggle('Show only likes', value=False)
+    has_model_only = st.toggle('Show only rows with model', value=False)
+    date_mode = st.selectbox('Which games?', ['This week (Thu–Mon)', 'Upcoming (>= today)', 'Latest date only', 'Last 3 days', 'All'], index=0)
+today = pd.Timestamp.now(tz='UTC').tz_convert(None).normalize()
+if date_mode == 'This week (Thu–Mon)':
+    wd = int(today.weekday())
+    start = (today - pd.Timedelta(days=(wd - 3) % 7)).normalize()
+    end = (start + pd.Timedelta(days=4)).normalize()
+    v = view[(view['_date'] >= start) & (view['_date'] <= end)]
+    if v.empty and view['_date'].notna().any():
+        latest = view['_date'].max()
+        v = view[view['_date'].eq(latest)].copy()
+elif date_mode == 'Upcoming (>= today)':
+    v = view[view['_date'] >= today]
+    if v.empty and view['_date'].notna().any():
+        latest = view['_date'].max()
+        v = view[view['_date'].eq(latest)].copy()
+elif date_mode == 'Latest date only':
+    latest = view['_date'].max()
+    v = view[view['_date'].eq(latest)]
+elif date_mode == 'Last 3 days':
+    v = view[view['_date'] >= today - pd.Timedelta(days=3)]
+else:
+    v = view
+if sport:
+    v = v[_as_str(v.get('sport', '')).str.lower().isin(sport)]
+if markets:
+    v = v[v['market_norm'].isin(markets)]
+if has_model_only:
+    v = v[v['p_model_use'].notna()]
+like_mask = v['p_model_use'].notna() & (pd.to_numeric(v['ev/$1'], errors='coerce').fillna(-9) >= float(min_ev)) & (pd.to_numeric(v['p_edge'], errors='coerce').fillna(-9) >= float(min_edge))
+v['✓'] = np.where(like_mask, '✅', '')
+if likes_only:
+    v = v[like_mask]
+BOOK = next((c for c in ['book', 'sportsbook', 'book_name', 'shop'] if c in v.columns), 'book')
+cols = [c for c in ['✓', 'game_id', 'market_norm', 'side', 'house_odds', 'house_book', BOOK, 'line', 'odds', 'implied_p(odds)', 'p_model_use', 'p_edge', 'ev/$1', '_date'] if c in v.columns]
+st.dataframe(v[cols].reset_index(drop=True), height=560, width='stretch')
+st.caption(f'Loaded: {edges_path} · exports root: {root_path} · rows={len(v):,} · cols={len(v.columns)}')
+st.download_button('Download filtered CSV', data=v[cols].to_csv(index=False).encode('utf-8'), file_name='picks_live_autoload.csv', mime='text/csv')
+
+
+
+
+

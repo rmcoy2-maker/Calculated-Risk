@@ -1,0 +1,25 @@
+import pandas as pd
+import streamlit as st
+from serving_ui.app._layout import header
+from app.lib.betlog import read_log
+from app.lib.risk import bankroll_curve_from_log, max_drawdown, volatility, sharpe_like
+header('Risk Analytics')
+df = read_log()
+if df.empty:
+    st.warning('No bets in log.')
+    st.stop()
+start_bankroll = st.number_input('Starting bankroll ($)', value=1000.0, min_value=0.0, step=50.0)
+curve = bankroll_curve_from_log(df, start_bankroll=start_bankroll)
+if curve.empty:
+    st.info('Need settled bets to compute realized risk metrics.')
+    st.stop()
+st.line_chart(curve.set_index('ts')['bankroll'], height=240)
+md = max_drawdown(curve['bankroll'])
+vol = volatility(curve['bankroll'])
+shr = sharpe_like(curve['bankroll'])
+c1, c2, c3 = st.columns(3)
+c1.metric('Max drawdown', f'${abs(md):,.2f}')
+c2.metric('Volatility (approx)', f'{vol:.4f}')
+c3.metric('Sharpe-like', f'{shr:.3f}')
+with st.expander('Data tail'):
+    st.dataframe(curve[['ts', 'profit', 'cum_profit', 'bankroll']].tail(30), hide_index=True, width='stretch')

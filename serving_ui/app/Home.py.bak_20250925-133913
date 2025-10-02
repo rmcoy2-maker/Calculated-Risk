@@ -1,0 +1,35 @@
+import sys, pathlib`r`nimport streamlit as st
+st.set_page_config(
+    page_title="Edge Finder",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+APP_DIR = pathlib.Path(__file__).resolve().parent                      # ...\serving_ui\app
+ROOT    = APP_DIR.parent.parent                                        # ...\edge-finder
+if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
+
+
+st.title("Calculated Risk")
+st.markdown("**Edge Finder Betting Analytics Parlay Builder**")
+st.divider()
+
+def link(page_filename: str, label: str):
+    # point explicitly into the pages/ fnewer
+    st.page_link(f"pages/{page_filename}", label=label)
+
+cols = st.columns(4)
+with cols[0]: link("09_Parlay_Builder.py", "Parlay Builder")
+with cols[1]: link("06_Bet_Log.py",        "Bet Log")
+with cols[2]: link("03_Backtest.py",       "Backtest")
+with cols[3]: link("98_Diagnostics.py",    "Diagnostics")
+
+st.divider()
+with st.expander("âš™ï¸ Diagnostics"):
+    st.write("APP_DIR:", APP_DIR)
+    st.write("Pages found:", [p.name for p in (APP_DIR / "pages").glob("*.py")])
+
+
+
+

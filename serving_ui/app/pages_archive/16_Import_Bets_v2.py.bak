@@ -1,0 +1,174 @@
+# serving_ui/app/pages/09_Import_Bets.py
+import io
+from pathlib import Path
+from typing import Dict, List
+
+import pandas as pd
+import streamlit as st
+
+# --- Page header ---
+from serving_ui.app._layout import header
+header("Import Bets (CSV Adapters)")
+st.caption("Upload a sportsbook/tracker CSV, map columns to your schema, and export a standardized file you can append to your bet log.")
+
+# -----------------------
+# Helpers / Defaults
+# -----------------------
+STANDARD_FIELDS: List[str] = [
+    "ts", "game_id", "market", "ref", "side", "selection",
+    "league", "sport", "book",
+    "line", "odds", "p_win", "stake", "result", "payout",
+    "open_odds", "close_odds",
+    "season", "week"
+]
+
+def _find_default_outdir() -> Path:
+    here = Path(__file__).resolve()
+    root = here.parents[2]
+    out = root / "exports"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+def _detect_common_mappings(cols: List[str]) -> Dict[str, str]:
+    """
+    Best-effort auto-map from common sportsbook/tracking headers to our STANDARD_FIELDS.
+    Users can override in the UI.
+    """
+    cset = {c.lower(): c for c in cols}
+    def has(*keys):
+        for k in keys:
+            if k in cset: return cset[k]
+        return "(skip)"
+
+    m = {
+        "ts":            has("ts", "timestamp", "date", "placed_at"),
+        "game_id":       has("game_id", "gid", "event_id", "match_id"),
+        "market":        has("market", "bet_type", "wager_type"),
+        "ref":           has("ref", "id", "bet_id", "wager_id"),
+        "side":          has("side", "pick", "bet_on", "outcome"),
+        "selection":     has("selection", "team", "player", "runner"),
+        "league":        has("league", "lg"),
+        "sport":         has("sport"),
+        "book":          has("book", "sportsbook", "source"),
+        "line":          has("line", "number", "spread", "total"),
+        "odds":          has("odds", "price", "american_odds"),
+        "p_win":         has("p_win", "prob", "win_prob", "model_p"),
+        "stake":         has("stake", "risk", "wager", "amount"),
+        "result":        has("result", "status", "settlement"),
+        "payout":        has("payout", "return", "to_win", "win_amount"),
+        "open_odds":     has("open_odds", "orig_odds", "opening_odds"),
+        "close_odds":    has("close_odds", "closing_odds", "close"),
+        "season":        has("season", "yr", "year"),
+        "week":          has("week", "wk"),
+    }
+    return m
+
+# -----------------------
+# Upload & Preview
+# -----------------------
+upload = st.file_uploader("Upload CSV", type=["csv"])
+if not upload:
+    st.info("Upload a CSV to begin. Supports any column namesâ€”map them to your standard schema below.")
+    st.stop()
+
+try:
+    raw = pd.read_csv(upload)
+except Exception:
+    # handle weird encodings quickly
+    raw = pd.read_csv(upload, encoding_errors="ignore")
+
+if raw.empty:
+    st.warning("Uploaded CSV appears empty.")
+    st.stop()
+
+st.subheader("Preview")
+st.dataframe(raw.head(20), use_container_width=True, hide_index=True)
+st.write(f"Rows detected: **{len(raw):,}** | Columns: {', '.join(list(raw.columns))}")
+
+# -----------------------
+# Column Mapping UI
+# -----------------------
+st.subheader("Column Mapping")
+auto = _detect_common_mappings(list(raw.columns))
+cols = ["(skip)"] + list(raw.columns)
+
+mapping: Dict[str, str] = {}
+grid_cols = st.columns(3)
+for i, field in enumerate(STANDARD_FIELDS):
+    with grid_cols[i % 3]:
+        default_idx = cols.index(auto.get(field, "(skip)")) if auto.get(field, "(skip)") in cols else 0
+        mapping[field] = st.selectbox(
+            f"Map â†’ **{field}**",
+            options=cols,
+            index=default_idx,
+            key=f"map_{field}"
+        )
+
+st.caption("Fields set to **(skip)** will be created as blank in the output.")
+
+# -----------------------
+# Transform
+# -----------------------
+st.subheader("Transform")
+if st.button("Build standardized dataset"):
+    out = {}
+    for target, src in mapping.items():
+        out[target] = raw[src] if src in raw.columns else None
+
+    df = pd.DataFrame(out)
+
+    # Optional: basic type nudges
+    for numcol in ["odds", "line", "p_win", "stake", "payout", "open_odds", "close_odds", "season", "week"]:
+        if numcol in df.columns:
+            df[numcol] = pd.to_numeric(df[numcol], errors="coerce")
+
+    # Save to disk + offer download
+    outdir = _find_default_outdir()
+    out_path = outdir / "standardized_bets.csv"
+    df.to_csv(out_path, index=False)
+
+    st.success(f"Standardized file written to: `{out_path}`")
+    st.download_button(
+        "Download standardized_bets.csv",
+        data=df.to_csv(index=False).encode(),
+        file_name="standardized_bets.csv",
+        mime="text/csv"
+    )
+
+    with st.expander("Sample (first 30 rows)"):
+        st.dataframe(df.head(30), use_container_width=True, hide_index=True)
+
+# -----------------------
+# Append into your log (optional)
+# -----------------------
+st.subheader("Append to Bet Log (Optional)")
+st.caption("Append the standardized rows to `exports/bets_log.csv`. If the log doesnâ€™t exist, it will be created.")
+append_ok = st.checkbox("I confirm the mapping looks correct and I want to append to my log.")
+
+if st.button("Append now", disabled=not append_ok):
+    outdir = _find_default_outdir()
+    target = outdir / "bets_log.csv"
+
+    # Build df again using current mapping selections
+    out = {t: (raw[src] if src in raw.columns else None) for t, src in mapping.items()}
+    std = pd.DataFrame(out)
+
+    if target.exists() and target.stat().st_size > 0:
+        try:
+            current = pd.read_csv(target)
+            merged = pd.concat([current, std], ignore_index=True)
+        except Exception:
+            merged = std  # fallback if schema mismatch
+    else:
+        merged = std
+
+    merged.to_csv(target, index=False)
+    st.success(f"Appended {len(std):,} rows â†’ `{target}`")
+    with st.expander("Log tail (last 30 rows)"):
+        st.dataframe(merged.tail(30), use_container_width=True, hide_index=True)
+
+
+
+
+
+

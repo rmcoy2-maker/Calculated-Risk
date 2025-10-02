@@ -1,0 +1,34 @@
+from __future__ import annotations
+import os
+from pathlib import Path
+import pandas as pd
+
+def _exports_dir() -> Path:
+    env = os.environ.get('EDGE_FINDER_ROOT')
+    if env and (Path(env) / 'exports').exists():
+        return Path(env) / 'exports'
+    if Path('exports').exists():
+        return Path('exports')
+    here = Path.cwd()
+    for up in [here] + list(here.parents)[:3]:
+        if (up / 'exports').exists():
+            return up / 'exports'
+    return Path('.')
+
+def read_scores() -> pd.DataFrame:
+    """Load canonical scores file if present; fall back to components."""
+    exp = _exports_dir()
+    candidates = ['scores_1966-2025.csv', 'scores_1966-2017_normalized.csv', '2017-2025_scores.csv', 'scores_clean.csv', 'scores.csv']
+    for name in candidates:
+        p = exp / name
+        try:
+            if p.exists() and p.stat().st_size > 512:
+                df = pd.read_csv(p, low_memory=False, encoding='utf-8-sig')
+                if not df.empty:
+                    for c in ['Season', 'Week', 'AwayScore', 'HomeScore', 'AwayWin', 'HomeWin', 'PostSeason']:
+                        if c in df.columns:
+                            df[c] = pd.to_numeric(df[c], errors='coerce')
+                    return df
+        except Exception:
+            pass
+    return pd.DataFrame()

@@ -1,0 +1,123 @@
+from __future__ import annotations
+# predict_parlay_score.py
+# Usage:
+#   python tools/predict_parlay_score.py --edges exports/edges.csv --model-dir models/parlay --out exports/parlay_scores.csv
+import os
+import argparse
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import joblib
+
+PARLAY_GROUP_CANDIDATES = ["parlay_id","slip_id","ticket_id","bet_id","wager_id","group_id"]
+MAX_LEGS_PER_SLIP = int(os.environ.get("MAX_LEGS_PER_SLIP", 6))
+
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--edges", default="exports/edges.csv")
+    ap.add_argument("--model-dir", default="models/parlay")
+    ap.add_argument("--out", default="exports/parlay_scores.csv")
+    return ap.parse_args()
+
+def ensure_parlay_grouping(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    for c in PARLAY_GROUP_CANDIDATES:
+        if c in df.columns and df[c].notna().any():
+            return df, c
+    out = df.copy()
+    ts = pd.to_datetime(out.get("sort_ts") if "sort_ts" in out.columns else out.get("ts"), errors="coerce")
+    ref = out.get("ref").astype(str) if "ref" in out.columns else ""
+    season = pd.to_numeric(out.get("season"), errors="coerce").fillna(ts.dt.year).astype(int)
+    weekish = pd.to_numeric(out.get("week_num"), errors="coerce").fillna(ts.dt.isocalendar().week).astype(int)
+    tss = ts.dt.floor("s")
+    grp = pd.DataFrame({"_ref": ref, "_season": season, "_week": weekish, "_tss": tss})
+    chunk = grp.groupby(["_ref","_season","_week","_tss"]).cumcount() // int(MAX_LEGS_PER_SLIP)
+    key = grp["_ref"].astype(str)+"|"+grp["_season"].astype(str)+"|"+grp["_week"].astype(str)+"|"+grp["_tss"].astype("int64").astype(str)+"|"+chunk.astype(str)
+    out["slip_id"] = pd.util.hash_pandas_object(key, index=False).astype("int64").abs().astype(str).str[-12:]
+    return out, "slip_id"
+
+def combined_decimal(odds_series: pd.Series) -> float | None:
+    decs = []
+    for o in odds_series:
+        try:
+            o = float(o)
+        except Exception:
+            return None
+        if o == 0:
+            return None
+        d = 1 + (o/100 if o > 0 else 100/abs(o))
+        decs.append(d)
+    if not decs:
+        return None
+    prod = 1.0
+    for d in decs:
+        prod *= d
+    return prod
+
+def build_features(df: pd.DataFrame, key_col: str) -> pd.DataFrame:
+    rows = []
+    for pid, g in df.groupby(key_col, dropna=False):
+        pwin = pd.to_numeric(g.get("p_win"), errors="coerce")
+        odds = pd.to_numeric(g.get("odds"), errors="coerce")
+        line = pd.to_numeric(g.get("line"), errors="coerce") if "line" in g.columns else pd.Series(dtype=float)
+
+        ip_prob = float(np.prod(pwin.dropna())) if pwin.notna().any() else np.nan
+        dec_comb = combined_decimal(odds.dropna()) if odds.notna().any() else np.nan
+        overlay  = (ip_prob * (dec_comb - 1.0) - (1 - ip_prob)) if (not np.isnan(ip_prob) and not np.isnan(dec_comb)) else np.nan
+
+        same_game = 0.0
+        if "game_id" in g.columns:
+            same_game = 1.0 - (g["game_id"].nunique() / max(len(g), 1))
+
+        rows.append(dict(
+            slip_id=str(pid),
+            legs=int(len(g)),
+            pwin_mean=float(pwin.mean()) if pwin.notna().any() else np.nan,
+            pwin_std=float(pwin.std()) if pwin.notna().any() else np.nan,
+            odds_mean=float(odds.mean()) if odds.notna().any() else np.nan,
+            odds_std=float(odds.std()) if odds.notna().any() else np.nan,
+            line_mean=float(line.mean()) if not line.empty and line.notna().any() else np.nan,
+            line_std=float(line.std()) if not line.empty and line.notna().any() else np.nan,
+            games_nunique=int(g.get("game_id").nunique()) if "game_id" in g.columns else np.nan,
+            books_nunique=int(g.get("ref").nunique()) if "ref" in g.columns else np.nan,
+            markets_nunique=int(g.get("market").nunique()) if "market" in g.columns else np.nan,
+            dec_comb=dec_comb,
+            ip_prob=ip_prob,
+            overlay=overlay,
+            same_game_ratio=same_game,
+        ))
+    return pd.DataFrame(rows)
+
+def main():
+    args = parse_args()
+    edges_path = Path(args.edges)
+    model_dir  = Path(args.model-dir) if hasattr(args, "model-dir") else Path(args.model_dir)  # safety
+    out_path   = Path(args.out)
+
+    if not edges_path.exists():
+        raise FileNotFoundError(f"Edges file not found: {edges_path}")
+    model = joblib.load(model_dir / "parlay_model.joblib")
+    feat_cols = joblib.load(model_dir / "features.joblib")
+
+    df = pd.read_csv(edges_path)
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    df, key = ensure_parlay_grouping(df)
+    feats = build_features(df, key)
+
+    # align features
+    for c in feat_cols:
+        if c not in feats.columns:
+            feats[c] = np.nan
+    X = feats[feat_cols].fillna(0)
+    probs = model.predict_proba(X)[:,1]
+
+    out = feats[["slip_id"]].copy()
+    out["parlay_score"] = probs
+    out = out.sort_values("parlay_score", ascending=False)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(out_path, index=False, encoding="utf-8-sig")
+    print(f"Wrote parlay scores to: {out_path.resolve()}")
+
+if __name__ == "__main__":
+    main()

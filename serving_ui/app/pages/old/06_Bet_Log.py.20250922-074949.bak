@@ -1,0 +1,78 @@
+# -*- coding: utf-8 -*-
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+BETS_CSV    = Path("exports/bets_log.csv")
+PARLAYS_CSV = Path("exports/parlays.csv")
+
+def _read_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    except Exception:
+        return pd.read_csv(path)
+
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    out.columns = [str(c).strip().lower() for c in out.columns]
+    out["sort_ts"] = pd.to_datetime(out.get("ts"), errors="coerce")
+    for c in ("stake","profit","result"):
+        if c not in out.columns:
+            out[c] = 0 if c != "result" else ""
+    return out
+
+def build_betlog() -> pd.DataFrame:
+    bets    = _normalize(_read_csv(BETS_CSV))
+    parlays = _normalize(_read_csv(PARLAYS_CSV))
+    if not bets.empty:
+        bets["origin"] = "bet"
+    if not parlays.empty:
+        parlays["origin"] = "parlay"
+    cols = sorted(set(bets.columns) | set(parlays.columns))
+    combined = pd.concat([bets.reindex(columns=cols), parlays.reindex(columns=cols)], ignore_index=True)
+    return combined.sort_values("sort_ts").reset_index(drop=True)
+
+def summarize(bets: pd.DataFrame) -> dict:
+    if bets.empty:
+        return dict(bets=0,wins=0,losses=0,pushes=0,roi=None)
+    res = bets["result"].astype(str).str.lower()
+    wins = (res == "win").sum()
+    losses = (res == "loss").sum()
+    pushes = (res == "push").sum()
+    stake_sum = pd.to_numeric(bets["stake"], errors="coerce").fillna(0).sum()
+    profit_sum = pd.to_numeric(bets["profit"], errors="coerce").fillna(0).sum()
+    roi = (profit_sum / stake_sum) if stake_sum > 0 else None
+    return dict(bets=len(bets), wins=wins, losses=losses, pushes=pushes, roi=roi)
+
+def equity_series(bets: pd.DataFrame, starting_bankroll: float = 100.0) -> pd.DataFrame:
+    p = pd.to_numeric(bets.get("profit", 0), errors="coerce").fillna(0)
+    equity = starting_bankroll + p.cumsum()
+    out = pd.DataFrame({"ts": bets["sort_ts"], "equity": equity})
+    out.set_index("ts", inplace=True)
+    return out
+
+# ---- UI ----
+bets_df = build_betlog()
+
+st.subheader("Bet Log — Summary")
+S = summarize(bets_df)
+c1,c2,c3,c4,c5 = st.columns(5)
+c1.metric("Bets", S["bets"])
+c2.metric("Wins", S["wins"])
+c3.metric("Losses", S["losses"])
+c4.metric("Pushes", S["pushes"])
+c5.metric("ROI", "-" if S["roi"] is None else f"{S['roi']*100:.1f}%")
+
+st.subheader("Bankroll equity")
+start_bankroll = st.number_input("Starting bankroll (units)", 0.0, 1e9, 100.0, 1.0)
+if bets_df.empty:
+    st.info("No bets/parlays found.")
+else:
+    st.line_chart(equity_series(bets_df, starting_bankroll=start_bankroll), y="equity")
+
+st.subheader("Rows")
+st.dataframe(bets_df, use_container_width=True, hide_index=True)

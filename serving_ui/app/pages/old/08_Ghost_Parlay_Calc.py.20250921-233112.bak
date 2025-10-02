@@ -1,0 +1,380 @@
+﻿from app.bootstrap import bootstrap_paths; bootstrap_paths()
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]   # .../serving_ui/app
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+# === end boot ===# --- Ghost Parlay Calculator ---
+# Replaces probe page with a working generator that builds and "ghosts" (drops)
+# weak legs to maximize EV of parlays from edges.csv. Writes results to
+# exports/hedge_candidates.csv and supports export to bet log (optional stub).
+
+import json
+import math
+import os
+import sys
+from dataclasses import dataclass
+from itertools import combinations
+from pathlib import Path
+from typing import Iterable, List, Tuple, Dict, Any
+
+import pandas as pd
+import streamlit as st
+
+# --- Path bootstrap: allow `import app.*` from any page ---
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# Optional project logger (safe import)
+try:
+    from app.utils.logger import log_error
+except Exception:
+    def log_error(e: Exception, context: str | None = None):
+        try:
+            print("[ghost_calc]", context or "", e)
+        except Exception:
+            pass
+
+# ---------- Helpers ----------
+
+def american_to_decimal(odds: int | float) -> float:
+    o = float(odds)
+    return 1.0 + (o / 100.0 if o > 0 else 100.0 / abs(o))
+
+def decimal_to_american(dec: float) -> int:
+    if dec <= 1.0:
+        return -100
+    return int(round((dec - 1.0) * 100)) if dec >= 2.0 else int(round(-100.0 / (dec - 1.0)))
+
+def fair_prob_from_decimal(dec: float) -> float:
+    return 1.0 / dec if dec > 0 else float("nan")
+
+@dataclass(frozen=True)
+class Leg:
+    game_id: str
+    market: str
+    side: str
+    book: str
+    odds: int
+    p_win: float
+
+    @property
+    def dec(self) -> float:
+        return american_to_decimal(self.odds)
+
+    @property
+    def label(self) -> str:
+        # Compact label for UI display
+        g = self.game_id.split("-")[-1] if "-" in self.game_id else self.game_id
+        mk = {"Moneyline": "ML", "ML": "ML"}.get(self.market, self.market)
+        sign = f"{self.odds:+d}"
+        return f"{g}:{mk} {self.side} {sign}"
+
+# Combo math (independence assumption)
+
+def combo_prob(legs: List[Leg]) -> float:
+    p = 1.0
+    for lg in legs:
+        p *= max(0.0, min(1.0, float(lg.p_win)))
+    return p
+
+def combo_decimal(legs: List[Leg]) -> float:
+    d = 1.0
+    for lg in legs:
+        d *= lg.dec
+    return d
+
+def ev_for_one_unit_stake(legs: List[Leg]) -> Tuple[float, float, float]:
+    """
+    Returns (EV, ROI, dec_odds) for a 1-unit stake.
+    EV = p * (dec-1) - (1-p)
+    ROI = EV / 1
+    """
+    if not legs:
+        return (0.0, 0.0, 0.0)
+    p = combo_prob(legs)
+    d = combo_decimal(legs)
+    ev = p * (d - 1.0) - (1.0 - p)
+    roi = ev  # since stake=1
+    return (ev, roi, d)
+
+def kelly_fraction(legs: List[Leg]) -> float:
+    p = combo_prob(legs)
+    b = combo_decimal(legs) - 1.0
+    q = 1.0 - p
+    if b <= 0:
+        return 0.0
+    f = (b * p - q) / b
+    return max(0.0, f)
+
+# ---------- Ghost (drop) optimizer ----------
+
+def ghost_optimize(legs: List[Leg]) -> Tuple[List[Leg], Dict[str, Any]]:
+    """Greedy drop: iteratively remove a single leg if it increases EV.
+    Returns (optimized_legs, details)
+    """
+    current = list(legs)
+    ev_now, _, d_now = ev_for_one_unit_stake(current)
+    improved = True
+    drops: List[Dict[str, Any]] = []
+
+    while improved and len(current) >= 2:
+        improved = False
+        best_gain = 0.0
+        best_idx = None
+        best_ev = ev_now
+        for i in range(len(current)):
+            candidate = current[:i] + current[i+1:]
+            ev_c, _, d_c = ev_for_one_unit_stake(candidate)
+            gain = ev_c - ev_now
+            if ev_c > best_ev + 1e-12:
+                best_ev = ev_c
+                best_idx = i
+                best_dec = d_c
+                best_gain = gain
+        if best_idx is not None:
+            removed = current.pop(best_idx)
+            drops.append({
+                "removed": removed.label,
+                "gain": best_gain,
+                "new_ev": best_ev,
+                "new_dec": best_dec,
+            })
+            ev_now = best_ev
+            improved = True
+
+    details = {"drops": drops, "final_ev": ev_now}
+    return current, details
+
+# ---------- Candidate generation with pruning ----------
+
+def make_legs(df: pd.DataFrame) -> List[Leg]:
+    legs: List[Leg] = []
+    for _, r in df.iterrows():
+        try:
+            legs.append(Leg(
+                game_id=str(r.get("game_id", "")),
+                market=str(r.get("market", "")),
+                side=str(r.get("side", "")),
+                book=str(r.get("book", "")),
+                odds=int(r.get("odds", 0)),
+                p_win=float(r.get("p_win", 0.0)),
+            ))
+        except Exception as e:
+            log_error(e, context="make_legs")
+    return legs
+
+
+def filter_pool(legs: List[Leg], *, min_p: float, min_abs_odds: int, enforce_distinct_games: bool) -> List[Leg]:
+    pool = [
+        lg for lg in legs
+        if (lg.p_win is not None and float(lg.p_win) > 0)
+        and (lg.p_win >= min_p)
+        and (abs(int(lg.odds)) >= min_abs_odds or True)  # keep flexible
+    ]
+    if enforce_distinct_games:
+        # Keep the single best leg (by p_win * edge proxy) per game
+        best_by_game: Dict[str, Leg] = {}
+        for lg in pool:
+            key = lg.game_id
+            score = lg.p_win * (lg.dec - 1.0)
+            cur = best_by_game.get(key)
+            if cur is None or score > cur.p_win * (cur.dec - 1.0):
+                best_by_game[key] = lg
+        pool = list(best_by_game.values())
+    return sorted(pool, key=lambda x: (x.p_win * (x.dec - 1.0)), reverse=True)
+
+
+def generate_candidates(pool: List[Leg], *, max_legs: int, top_k_pool: int, limit_combos: int) -> List[List[Leg]]:
+    pool = pool[:max(1, top_k_pool)]
+    cands: List[List[Leg]] = []
+    count = 0
+    for r in range(2, max(2, max_legs) + 1):
+        for combo in combinations(pool, r):
+            cands.append(list(combo))
+            count += 1
+            if limit_combos and count >= limit_combos:
+                return cands
+    return cands
+
+# ---------- UI ----------
+
+st.set_page_config(page_title="👻 Ghost Parlay Calculator", layout="wide")
+st.title("👻 Ghost Parlay Calculator")
+
+# Resolve paths
+ENV_ROOT = os.getenv("EDGE_FINDER_ROOT", "")
+ROOT = Path(ENV_ROOT) if ENV_ROOT else _REPO_ROOT
+EXPORT = ROOT / "exports"
+EDGES = EXPORT / "edges.csv"
+CANDS = EXPORT / "hedge_candidates.csv"  # we reuse this as the export sink
+BETLOG = EXPORT / "bets_log.csv"
+
+with st.expander("Paths", expanded=False):
+    st.code(f"ROOT={ROOT}\nEXPORT={EXPORT}\nEDGES={EDGES}\nCANDS={CANDS}")
+
+# Load edges
+@st.cache_data(show_spinner=False)
+def load_edges(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    # Normalize column names
+    df.columns = [c.strip().lower() for c in df.columns]
+    # Friendly aliases
+    if "ml" in df.get("market", pd.Series(dtype=str)).unique():
+        pass
+    # Coerce
+    for c in ("p_win",):
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "odds" in df:
+        df["odds"] = pd.to_numeric(df["odds"], errors="coerce").fillna(0).astype(int)
+    return df
+
+edges_df = load_edges(EDGES)
+
+if edges_df.empty:
+    st.warning("No edges found. Populate exports/edges.csv with columns: game_id, market, side, book, odds, p_win.")
+    with st.expander("Quick sample writer"):
+        if st.button("Write SAMPLE edges", key="write_sample"):
+            EDGES.write_text(
+                "game_id,market,side,book,odds,p_win\n"
+                "2025-09-17-NE@NYJ,ML,NE,DK,-120,0.545\n"
+                "2025-09-17-GB@CHI,ML,GB,FD,135,0.4255\n"
+                "2025-09-17-KC@BUF,ML,KC,MGM,-110,0.5238\n"
+                "2025-09-17-DAL@PHI,ML,PHI,PN,120,0.4545\n",
+                encoding="utf-8",
+            )
+            st.success(f"Wrote {EDGES}. Re-run page.")
+    st.stop()
+
+st.success(f"Loaded edges: {len(edges_df):,} rows")
+
+# Sidebar controls
+with st.sidebar:
+    st.header("Build Controls")
+    max_legs = st.slider("Max legs", 2, 8, 4, 1)
+    min_p = st.slider("Min leg win prob (p_win)", 0.40, 0.80, 0.50, 0.01)
+    min_abs_odds = st.number_input("Min |odds| to include", value=100, min_value=0, step=5)
+    enforce_distinct = st.checkbox("Distinct games only", value=True, help="Avoids stacking correlated legs from the same game.")
+    top_k_pool = st.number_input("Top-K legs to consider", min_value=10, max_value=5000, value=200, step=10)
+    limit_combos = st.number_input("Hard cap on combos (0 = no cap)", min_value=0, max_value=200000, value=5000, step=500)
+
+    st.header("Ranking & Filters")
+    min_roi = st.number_input("Min ROI (per unit)", value=0.01, step=0.01, format="%.2f")
+    min_kelly = st.number_input("Min Kelly fraction", value=0.00, step=0.01, format="%.2f")
+    show_n = st.number_input("Show top N", min_value=5, max_value=2000, value=100, step=5)
+
+# Build candidate pool
+all_legs = make_legs(edges_df)
+pool = filter_pool(all_legs, min_p=min_p, min_abs_odds=min_abs_odds, enforce_distinct_games=enforce_distinct)
+
+st.write(f"Pool after filters: **{len(pool):,} legs** (from {len(all_legs):,})")
+
+# Generate + ghost
+run_build = st.button("Generate Ghost Parlays", type="primary")
+
+results_rows: List[Dict[str, Any]] = []
+
+def legs_to_json(legs: List[Leg]) -> str:
+    return json.dumps([
+        {
+            "game_id": lg.game_id,
+            "market": lg.market,
+            "side": lg.side,
+            "book": lg.book,
+            "odds": lg.odds,
+            "p_win": lg.p_win,
+        } for lg in legs
+    ])
+
+if run_build:
+    with st.spinner("Building combos and ghost-optimizing..."):
+        combos = generate_candidates(pool, max_legs=max_legs, top_k_pool=top_k_pool, limit_combos=limit_combos)
+        for combo in combos:
+            # Initial EV
+            ev0, roi0, d0 = ev_for_one_unit_stake(combo)
+            # Ghost optimize
+            opt_legs, details = ghost_optimize(combo)
+            ev1, roi1, d1 = ev_for_one_unit_stake(opt_legs)
+            kf = kelly_fraction(opt_legs)
+            # Keep only if passes thresholds
+            if roi1 >= min_roi and kf >= min_kelly:
+                results_rows.append({
+                    "legs": " + ".join(l.label for l in opt_legs),
+                    "n_legs": len(opt_legs),
+                    "american": decimal_to_american(d1),
+                    "decimal": round(d1, 4),
+                    "p_combo": round(combo_prob(opt_legs), 6),
+                    "ev_unit": round(ev1, 6),
+                    "roi": round(roi1, 6),
+                    "kelly": round(kf, 6),
+                    "drops": "; ".join(f"[-]{d['removed']} (ΔEV={d['gain']:+.4f})" for d in details.get("drops", [])),
+                    "legs_json": legs_to_json(opt_legs),
+                })
+
+    if not results_rows:
+        st.warning("No candidates met the thresholds. Try lowering Min ROI / increasing pool.")
+    else:
+        res_df = pd.DataFrame(results_rows)
+        res_df.sort_values(["roi", "kelly", "american"], ascending=[False, False, False], inplace=True)
+        st.subheader("Top Ghosted Parlays")
+        st.dataframe(res_df.head(show_n), use_container_width=True)
+
+        # --- Export actions ---
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("Export to hedge_candidates.csv", key="export_cands"):
+                out_cols = ["legs", "american", "p_combo", "ev_unit", "legs_json"]
+                EXPORT.mkdir(parents=True, exist_ok=True)
+                res_df[out_cols].to_csv(CANDS, index=False)
+                st.success(f"Wrote {CANDS}")
+        with c2:
+            # Optional: append the top N as ghost suggestions to bet log (stub as templates)
+            if st.button("Append top N to bets_log.csv (as suggestions)"):
+                N = int(show_n)
+                take = res_df.head(N).copy()
+                # We expand each parlay as a single row with JSON legs and 0 stake by default
+                bl_cols = ["ts", "game_id", "market", "ref", "side", "line", "odds", "p_win", "ev"]
+                try:
+                    existing = pd.read_csv(BETLOG)
+                except Exception:
+                    existing = pd.DataFrame(columns=bl_cols)
+                # Add one row per parlay suggestion
+                from datetime import datetime
+                rows = []
+                for _, r in take.iterrows():
+                    rows.append({
+                        "ts": datetime.utcnow().isoformat(),
+                        "game_id": "PARLAY",  # marker
+                        "market": "GHOST",
+                        "ref": r.get("legs", ""),
+                        "side": "-",
+                        "line": 0,
+                        "odds": int(r.get("american", 0)),
+                        "p_win": float(r.get("p_combo", 0.0)),
+                        "ev": float(r.get("ev_unit", 0.0)),
+                    })
+                new = pd.concat([existing, pd.DataFrame(rows)], ignore_index=True)
+                new.to_csv(BETLOG, index=False)
+                st.success(f"Appended {len(rows)} suggestions to {BETLOG}")
+        with c3:
+            st.download_button("Download results (CSV)", data=res_df.to_csv(index=False).encode("utf-8"), file_name="ghost_parlays.csv", mime="text/csv")
+
+# --- Debug expander ---
+with st.expander("Preview source edges (first 500 rows)"):
+    st.dataframe(edges_df.head(500), use_container_width=True)
+
+st.caption("Assumes independence between legs. Use 'Distinct games only' to reduce correlation risk. Tune Min ROI/Kelly to control aggressiveness.")
+
+
+
+
+
+

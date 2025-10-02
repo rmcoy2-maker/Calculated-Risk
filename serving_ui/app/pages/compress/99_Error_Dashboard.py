@@ -1,0 +1,152 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+try:
+    pass
+except Exception:
+    pass
+st.markdown('\n<style>\n  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }\n  [data-testid="stHeader"] { z-index: 9990; }\n</style>\n', unsafe_allow_html=True)
+try:
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+
+        def __nfp_apply(_):
+            return
+__nfp_apply(st)
+try:
+    from app.bootstrap import bootstrap_paths
+    bootstrap_paths()
+except Exception:
+    import sys, os
+    from pathlib import Path
+    _root = str(Path(__file__).resolve().parents[2])
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    try:
+        from app.bootstrap import bootstrap_paths
+        bootstrap_paths()
+    except Exception:
+        pass
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from pathlib import Path
+st.title('🚨 Error Dashboard')
+ROOT = Path(__file__).resolve().parents[2]
+LOGFILE = ROOT / 'exports' / 'errors.log'
+colA, colB = st.columns([2, 1])
+with colA:
+    st.write('Log file:', LOGFILE)
+with colB:
+    if st.button('ðŸ§¹ Clear log'):
+        LOGFILE.write_text('', encoding='utf-8')
+        st.success('Cleared.')
+        st.rerun()
+if not LOGFILE.exists() or LOGFILE.stat().st_size == 0:
+    st.success('✅ No errors logged yet.')
+else:
+    st.download_button('⬇️\x8f Download errors.log', LOGFILE.read_bytes(), file_name='errors.log')
+    st.text_area('Errors', LOGFILE.read_text(encoding='utf-8'), height=600)
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+# === Nudge+Session (auto-injected) ===
+try:
+    from app.utils.nudge import begin_session, touch_session, session_duration_str, bump_usage, show_nudge  # type: ignore
+except Exception:
+    def begin_session(): pass
+    def touch_session(): pass
+    def session_duration_str(): return ""
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Initialize/refresh session and show live duration
+begin_session()
+touch_session()
+if hasattr(st, "sidebar"):
+    st.sidebar.caption(f"🕒 Session: {session_duration_str()}")
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Optional upsell banner after threshold interactions in last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge+Session (auto-injected) ===
+

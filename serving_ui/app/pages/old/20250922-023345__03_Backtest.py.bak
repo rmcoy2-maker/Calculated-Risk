@@ -1,0 +1,88 @@
+# =========================
+# Helpers
+# -----------------------------
+
+
+def __read_edges() -> _pd.DataFrame:
+try:
+if not _EDGES.exists():
+return _pd.DataFrame()
+df = _pd.read_csv(_EDGES, encoding="utf-8-sig")
+except Exception:
+try:
+df = _pd.read_csv(_EDGES)
+except Exception:
+return _pd.DataFrame()
+df.columns = [str(c).strip().lower() for c in df.columns]
+if "ts" in df.columns:
+df["sort_ts"] = _pd.to_datetime(df["ts"], errors="coerce")
+else:
+df["sort_ts"] = _pd.NaT
+# Minimal set for viewing
+keep = [
+"sort_ts","ts","sport","league","game_id","market","market_group",
+"ref","side","line","odds","p_win","edge","stake","profit"
+]
+for k in keep:
+if k not in df.columns:
+df[k] = None
+return df[keep]
+
+
+
+
+def __render_summary(df: _pd.DataFrame):
+cols = _st.columns(5)
+n = len(df)
+wins = _pd.to_numeric(df.get("profit"), errors="coerce").fillna(0)
+wins_ct = (wins > 0).sum()
+losses_ct = (wins < 0).sum()
+pushes_ct = (wins == 0).sum()
+stake_sum = _pd.to_numeric(df.get("stake"), errors="coerce").fillna(0).sum()
+prof_sum = _pd.to_numeric(df.get("profit"), errors="coerce").fillna(0).sum()
+roi = (prof_sum / stake_sum) if stake_sum > 0 else None
+
+
+cols[0].metric("Bets", n)
+cols[1].metric("Wins", int(wins_ct))
+cols[2].metric("Losses", int(losses_ct))
+cols[3].metric("Pushes", int(pushes_ct))
+cols[4].metric("ROI", "-" if roi is None else f"{roi*100:.1f}%")
+
+
+
+
+def __equity(df: _pd.DataFrame, start: float = 100.0) -> _pd.DataFrame:
+p = _pd.to_numeric(df.get("profit", 0), errors="coerce").fillna(0)
+eq = start + p.cumsum()
+out = _pd.DataFrame({"ts": df["sort_ts"], "equity": eq})
+out.set_index("ts", inplace=True)
+return out
+
+
+# -----------------------------
+# Controls (toy filters + run button hook)
+# -----------------------------
+with _st.expander("Controls", expanded=False):
+start_bankroll = _st.number_input("Starting bankroll (units)", min_value=0.0, value=100.0, step=1.0, key="bk_start")
+run = _st.button("Run Backtest", type="primary")
+if run:
+_st.success("Backtest run hook executed (implement your pipeline here).")
+
+
+edges_df = __read_edges()
+
+
+_st.subheader("Summary")
+__render_summary(edges_df)
+
+
+_st.subheader("Equity curve")
+if edges_df.empty:
+_st.info("No edges found in exports/edges.csv")
+else:
+_st.line_chart(__equity(edges_df, start= _st.session_state.get("bk_start", 100.0)), y="equity")
+
+
+_st.subheader("Edges preview")
+_st.dataframe(edges_df, use_container_width=True, hide_index=True)

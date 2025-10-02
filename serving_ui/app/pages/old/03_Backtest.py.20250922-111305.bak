@@ -1,0 +1,711 @@
+﻿# -*- coding: utf-8 -*-
+"""
+Backtest page (patched)
+- Wide layout + file status + reload
+- Seasons (1966–2025) & Weeks (1–22) with 'All' meaning NO FILTER
+- Summary + Equity curve
+- Staking & Sizing (fractional Kelly, target profit, confidence)
+- Ghost-leg parlay near-miss analysis
+"""
+
+from pathlib import Path
+import os, sys, re, subprocess
+from typing import Optional, Tuple, List
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ---------- Page config ----------
+st.set_page_config(page_title="Backtest", layout="wide")
+
+# ---------- Constants ----------
+MIN_SEASON = 1966
+MAX_SEASON_FALLBACK = 2025
+WEEKS = list(range(1, 23))  # 1..22
+
+# Likely locations for edges.csv
+EDGES_CANDIDATES = [
+    Path("exports/edges.csv"),
+    Path("serving_ui/exports/edges.csv"),
+    Path("calculated-risk/exports/edges.csv"),
+    Path("data_scaffold/exports/edges.csv"),
+]
+
+# ---------- Helpers: IO ----------
+def read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path or not path.exists():
+        return pd.DataFrame()
+    try:
+        if path.stat().st_size == 0:
+            return pd.DataFrame()
+    except Exception:
+        pass
+    for kwargs in ({"encoding": "utf-8-sig"}, {}, {"engine": "python"}):
+        try:
+            return pd.read_csv(path, **kwargs)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+def _first_nonempty_csv(paths: list[Path]) -> Path | None:
+    for p in paths:
+        try:
+            if p.exists() and p.stat().st_size > 0:
+                return p
+        except Exception:
+            pass
+    return paths[0] if paths else None
+
+def _mtime_key(p: Path | None) -> float:
+    try:
+        return p.stat().st_mtime if p and p.exists() else 0.0
+    except Exception:
+        return 0.0
+
+@st.cache_data(show_spinner=False)
+def load_edges(nonce: int, chosen_path: str, file_mtime: float) -> pd.DataFrame:
+    path = Path(chosen_path) if chosen_path else None
+    return read_csv_safe(path) if path else pd.DataFrame()
+
+def normalize_edges(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    out.columns = [str(c).strip().lower() for c in out.columns]
+    if "sort_ts" not in out.columns:
+        out["sort_ts"] = pd.to_datetime(out.get("ts"), errors="coerce")
+    for c in ("stake","profit","edge"):
+        if c not in out.columns:
+            out[c] = 0.0
+    if "season" not in out.columns:
+        s_ts = pd.to_datetime(out.get("sort_ts"), errors="coerce").dt.year
+        s_gid = pd.Series(np.nan, index=out.index)
+        if "game_id" in out.columns:
+            s_gid = out["game_id"].astype(str).str.extract(r"(\d{4})", expand=False).astype(float)
+        out["season"] = s_gid.fillna(s_ts).fillna(MAX_SEASON_FALLBACK).astype(int)
+    if "week" not in out.columns:
+        w_gid = pd.Series(np.nan, index=out.index)
+        if "game_id" in out.columns:
+            w = out["game_id"].astype(str).str.extract(r"[Ww](?:eek)?[_-]?(\d{1,2})", expand=False)
+            w_gid = pd.to_numeric(w, errors="coerce")
+        out["week"] = w_gid
+    out["season"] = pd.to_numeric(out["season"], errors="coerce")
+    out["week"] = pd.to_numeric(out["week"], errors="coerce")
+    return out
+
+def filter_edges(df: pd.DataFrame, seasons: list[int] | None, weeks: list[int] | None) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df
+    if seasons:  # None means no filter
+        out = out[out["season"].isin(seasons)]
+    if weeks:    # None means no filter
+        out = out[out["week"].isin(weeks)]
+    return out
+
+def summary(df: pd.DataFrame) -> dict:
+    if df.empty:
+        return dict(n=0, stake=0.0, profit=0.0, roi=None)
+    stake = pd.to_numeric(df.get("stake", 0), errors="coerce").fillna(0).sum()
+    profit = pd.to_numeric(df.get("profit", 0), errors="coerce").fillna(0).sum()
+    roi = (profit / stake) if stake > 0 else None
+    return dict(n=len(df), stake=stake, profit=profit, roi=roi)
+
+def equity(df: pd.DataFrame, start: float = 100.0) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame({"ts": [], "equity": []}).set_index("ts")
+    p = pd.to_numeric(df.get("profit", 0), errors="coerce").fillna(0)
+    eq = start + p.cumsum()
+    out = pd.DataFrame({"ts": df["sort_ts"], "equity": eq}).set_index("ts")
+    return out
+
+def download_csv(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+# ---------- Ghost Parlay helpers ----------
+_PARLAY_CANDIDATES = ["parlay_id", "slip_id", "bet_slip_id", "ticket_id", "parlay_key", "group_id"]
+_RESULT_CANDIDATES = ["won", "win", "result", "outcome", "status", "grade", "leg_result"]
+_ODDS_CANDIDATES = ["american_odds", "odds", "price", "line"]
+_PUSH_VALUES = {"push", "void", "tie", "refund", "no action", "no-action", "no_action", "na"}
+
+def _find_first(colnames: List[str], pool: List[str]) -> Optional[str]:
+    for c in pool:
+        if c in colnames: return c
+    return None
+
+def _american_to_decimal(x) -> Optional[float]:
+    try:
+        v = float(x)
+    except Exception:
+        return None
+    if v == 0: return None
+    if v > 0: return 1.0 + v/100.0
+    return 1.0 + 100.0/abs(v)
+
+def _coerce_result_series(df: pd.DataFrame, result_col: Optional[str]) -> pd.Series:
+    if result_col and result_col in df.columns:
+        s = df[result_col].astype(str).str.strip().str.lower()
+        if set(s.unique()) <= {"true","false","1","0","nan","none"}:
+            return s.map({"true":"win","1":"win","false":"loss","0":"loss"}).fillna(np.nan)
+        s2 = s.replace({
+            "w":"win","won":"win","win":"win","loss":"loss","l":"loss","lose":"loss","lost":"loss",
+            "push":"push","void":"push","tie":"push","refund":"push","no action":"push","no-action":"push","no_action":"push"
+        })
+        return s2
+    if "profit" in df.columns:
+        p = pd.to_numeric(df["profit"], errors="coerce")
+        return np.where(p > 1e-9, "win", np.where(p < -1e-9, "loss", "push"))
+    return pd.Series(np.nan, index=df.index)
+
+def _coerce_odds_series(df: pd.DataFrame, odds_col: Optional[str]) -> pd.Series:
+    if odds_col and odds_col in df.columns:
+        s = pd.to_numeric(df[odds_col], errors="coerce")
+        if (s.abs() > 5).mean() >= 0.5:
+            return s.apply(_american_to_decimal)
+        return s.where(s > 0, np.nan)
+    for c in _ODDS_CANDIDATES:
+        if c in df.columns:
+            s = pd.to_numeric(df[c], errors="coerce")
+            if s.notna().any():
+                return s.apply(_american_to_decimal)
+    return pd.Series(np.nan, index=df.index)
+
+def compute_ghost_parlay_stats(df: pd.DataFrame, group_col: Optional[str], result_col: Optional[str], odds_col: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if df.empty or not group_col or group_col not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    result = _coerce_result_series(df, result_col)
+    odds_dec = _coerce_odds_series(df, odds_col)
+
+    is_push = (result == "push") | result.isin(_PUSH_VALUES)
+    is_win  = (result == "win")
+    is_loss = (result == "loss")
+
+    gl = pd.Series(pd.NA, index=df.index, dtype="string")
+    gl = gl.mask(is_push, "push")
+    gl = gl.mask(is_win,  "win")
+    gl = gl.mask(is_loss, "loss")
+    work["_gl_result"] = gl
+
+    stake_col = "parlay_stake" if "parlay_stake" in work.columns else ("stake" if "stake" in work.columns else None)
+
+    groups = []
+    for gid, g in work.groupby(group_col, dropna=True):
+        legs = len(g)
+        wins = (g["_gl_result"] == "win").sum()
+        losses = (g["_gl_result"] == "loss").sum()
+        pushes = (g["_gl_result"] == "push").sum()
+
+        actual_win = (losses == 0) and (wins + pushes == legs) and (wins > 0)
+        near_miss = (losses == 1) and (wins >= 1)
+
+        ghost_mult = float(np.prod(g.loc[g["_gl_result"] != "loss", "_gl_mult"].fillna(1.0))) if near_miss else np.nan
+
+        if stake_col:
+            parlay_stake = pd.to_numeric(g[stake_col], errors="coerce").dropna()
+            parlay_stake = float(parlay_stake.iloc[0]) if not parlay_stake.empty else 1.0
+        else:
+            parlay_stake = 1.0
+
+        ghost_profit = (parlay_stake * (ghost_mult - 1.0)) if near_miss and np.isfinite(ghost_mult) else np.nan
+
+        groups.append({
+            group_col: gid,
+            "legs": legs,
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "actual_win": actual_win,
+            "near_miss_one_loss": near_miss,
+            "ghost_decimal_mult": ghost_mult,
+            "parlay_stake_est": parlay_stake,
+            "ghost_profit_est": ghost_profit,
+        })
+
+    near = pd.DataFrame(groups)
+    if near.empty:
+        return near, pd.DataFrame()
+
+    total_parlays = len(near)
+    actual_wins = int(near["actual_win"].sum())
+    near_misses = int(near["near_miss_one_loss"].sum())
+    ghost_cashables = int((near["near_miss_one_loss"] & near["ghost_decimal_mult"].notna()).sum())
+
+    total_ghost_profit = float(pd.to_numeric(near["ghost_profit_est"], errors="coerce").fillna(0).sum())
+    total_ghost_stake  = float(pd.to_numeric(near.loc[near["near_miss_one_loss"], "parlay_stake_est"], errors="coerce").fillna(0).sum())
+    ghost_roi = (total_ghost_profit / total_ghost_stake) if total_ghost_stake > 0 else np.nan
+
+    rollup = pd.DataFrame([{
+        "parlays": total_parlays,
+        "parlay_wins": actual_wins,
+        "near_miss_parlays_(1_loss)": near_misses,
+        "ghost_cashable_(drop_1_loss)": ghost_cashables,
+        "ghost_profit_est_sum": total_ghost_profit,
+        "ghost_stake_sum": total_ghost_stake,
+        "ghost_roi_est": ghost_roi
+    }])
+
+    near = near.sort_values(by=["near_miss_one_loss", "ghost_profit_est"],
+                            ascending=[False, False], na_position="last").reset_index(drop=True)
+
+    return near, rollup
+
+# ---------- UI ----------
+st.title("Backtest")
+
+# --- Source file + status + reload ---
+if "bt_nonce" not in st.session_state:
+    st.session_state.bt_nonce = 0
+if "sim_nonce" not in st.session_state:
+    st.session_state.sim_nonce = 0
+
+
+
+default_path = _first_nonempty_csv(EDGES_CANDIDATES)
+chosen_path = st.text_input("Edges CSV path", value=str(default_path) if default_path else "exports/edges.csv",
+                            help="Change if your exports live elsewhere.")
+
+p = Path(chosen_path)
+size = (p.stat().st_size if p.exists() else 0)
+mtime = _mtime_key(p)
+status_cols = st.columns([3,2,2,1])
+with status_cols[0]:
+    st.caption("Active file")
+    st.code(str(p), language="text")
+with status_cols[1]:
+    st.caption("Size (bytes)")
+    st.write(f"{size:,}")
+with status_cols[2]:
+    st.caption("Last modified")
+    st.write("-" if not p.exists() else datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"))
+with status_cols[3]:
+    if st.button("Reload", help="Reload edges.csv from disk"):
+        st.session_state.bt_nonce += 1
+
+# Header button
+if st.button("Run Backtest", type="primary", key="run_bt_top"):
+    st.session_state.bt_nonce += 1  # reload file if it changed
+    st.session_state.sim_nonce += 1 # force re-sim
+
+edges_raw = load_edges(st.session_state.bt_nonce, chosen_path, _mtime_key(p))
+edges = normalize_edges(edges_raw)
+
+# Make sure avail_seasons exists for the controls
+avail_seasons = list(range(MIN_SEASON, MAX_SEASON_FALLBACK + 1))
+
+# ---------- Filters UI ----------
+row1 = st.container()
+with row1:
+    c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
+
+    with c1:
+        st.caption("Seasons")
+        seasons_all = ["All"] + [str(y) for y in avail_seasons]
+        if "bk_seasons" not in st.session_state:
+            st.session_state["bk_seasons"] = ["All"]
+        seasons_sel = st.multiselect("Select seasons", seasons_all,
+                                     default=st.session_state["bk_seasons"], key="ui_seasons")
+        # All (or full set) -> don't filter
+        if ("All" in seasons_sel) or (len(seasons_sel) == 0) or (len(seasons_sel) == (len(seasons_all) - 1)):
+            seasons_pick = None
+        else:
+            seasons_pick = [int(y) for y in seasons_sel if re.fullmatch(r"\d{4}", y or "")]
+
+    with c2:
+        st.caption("Quick seasons")
+        colA, colB = st.columns(2)
+        with colA:
+            if st.button("All seasons"):
+                st.session_state["bk_seasons"] = ["All"]
+        with colB:
+            if st.button("Clear seasons"):
+                st.session_state["bk_seasons"] = []
+
+    with c3:
+        st.caption("Weeks")
+        week_labels = [str(w) for w in WEEKS]
+        if "bk_weeks" not in st.session_state:
+            st.session_state["bk_weeks"] = week_labels  # default = all
+        weeks_sel = st.multiselect("Select weeks (1–22)", week_labels,
+                                   default=st.session_state["bk_weeks"], key="ui_weeks")
+        # All (or none) -> don't filter
+        if (len(weeks_sel) == 0) or (len(weeks_sel) == len(week_labels)):
+            weeks_pick = None
+        else:
+            weeks_pick = [int(x) for x in weeks_sel if x.isdigit()]
+
+    with c4:
+        st.caption("Quick weeks")
+        colC, colD = st.columns(2)
+        with colC:
+            if st.button("All weeks"):
+                st.session_state["bk_weeks"] = [str(w) for w in WEEKS]
+        with colD:
+            if st.button("Clear weeks"):
+                st.session_state["bk_weeks"] = []
+
+# Controls row
+row2 = st.container()
+with row2:
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        start_bankroll = st.number_input("Starting bankroll (units)", 0.0, 1e9, 100.0, 1.0, key="bk_start")
+    with c2:
+        newest_first = st.toggle("Newest first", value=True)
+    with c3:
+        run_bt = st.button("Run Backtest", type="primary")
+        if run_bt:
+            st.session_state.bt_nonce += 1
+            st.session_state.sim_nonce += 1
+
+# --- Kelly simulation helpers ---
+def _to_decimal(x):
+    """Convert American or Decimal odds to Decimal."""
+    try:
+        v = float(x)
+    except Exception:
+        return np.nan
+    # Decimal common range
+    if 1.01 <= v <= 10.0:
+        return v
+    # American
+    if v > 0:
+        return 1.0 + v/100.0
+    if v < 0:
+        return 1.0 + 100.0/abs(v)
+    return np.nan
+
+def _pick_prob_col(cols):
+    for c in ["p_win","prob","win_prob","model_prob","p"]:
+        if c in cols: return c
+    return None
+
+def _pick_odds_col(cols):
+    for c in ["american_odds","odds","price","line"]:
+        if c in cols: return c
+    return None
+
+def _kelly_f(p, dec):
+    """
+    f* = (b*p - (1-p)) / b, b = dec-1. Non-finite -> 0, negatives -> 0.
+    """
+    p = pd.to_numeric(p, errors="coerce")
+    dec = pd.to_numeric(dec, errors="coerce")
+    b = dec - 1.0
+    q = 1.0 - p
+    f = (b*p - q) / b
+    f[~np.isfinite(f)] = 0.0
+    return np.clip(f, 0.0, None)
+
+def simulate_kelly(df, p_col, o_col, kelly_frac, cap_pct, start_bankroll):
+    """
+    Returns (sim_df, eq_df). sim_df has sim_stake/sim_profit/sim_equity/sim_outcome.
+    Uses graded 'result'/'won'/'win' when present; otherwise EV.
+    """
+    if df.empty:
+        return df.assign(sim_stake=[], sim_profit=[], sim_equity=[], sim_outcome=[]), pd.DataFrame({"equity":[]})
+
+    d = df.copy()
+
+    # odds -> decimal
+    dec = pd.to_numeric(d.get(o_col, np.nan), errors="coerce").apply(_to_decimal)
+    # probability
+    p = pd.to_numeric(d.get(p_col, np.nan), errors="coerce")
+
+    # base Kelly, then apply user kelly_frac scaler (e.g., 0.25 for quarter Kelly)
+    fstar = _kelly_f(p, dec) * float(kelly_frac)
+    cap_f = float(cap_pct) / 100.0  # per-bet cap
+
+    # optional grading
+    res = d.get("result", d.get("won", d.get("win")))
+    res = res.astype(str).str.lower() if res is not None else None
+
+    bank = float(start_bankroll)
+    stakes, profits, equities, outcomes = [], [], [], []
+
+    for i in range(len(d)):
+        fi = fstar.iloc[i] if pd.notna(fstar.iloc[i]) else 0.0
+        if not np.isfinite(fi) or fi < 0:
+            fi = 0.0
+        stake_i = min(cap_f, fi) * bank
+
+        dec_i = dec.iloc[i] if pd.notna(dec.iloc[i]) and dec.iloc[i] > 1.0 else np.nan
+
+        if res is not None:
+            ri = res.iloc[i]
+            win  = ("w" in ri) and ("l" not in ri)
+            loss = ("l" in ri) and ("w" not in ri)
+            push = ("push" in ri) or ("void" in ri) or ("tie" in ri)
+            if pd.notna(dec_i):
+                if win:  prof = stake_i * (dec_i - 1.0)
+                elif loss: prof = -stake_i
+                elif push: prof = 0.0
+                else:
+                    p_i = p.iloc[i] if pd.notna(p.iloc[i]) else 0.0
+                    prof = stake_i * ((dec_i - 1.0)*p_i - (1.0 - p_i))
+            else:
+                prof = 0.0
+        else:
+            if pd.notna(dec_i):
+                p_i = p.iloc[i] if pd.notna(p.iloc[i]) else 0.0
+                prof = stake_i * ((dec_i - 1.0)*p_i - (1.0 - p_i))
+            else:
+                prof = 0.0
+
+        bank += prof
+        stakes.append(round(stake_i, 4))
+        profits.append(round(prof, 4))
+        equities.append(round(bank, 4))
+        outcomes.append("W" if prof > 0 else ("L" if prof < 0 else "P"))
+
+    d["sim_stake"] = stakes
+    d["sim_profit"] = profits
+    d["sim_equity"] = equities
+    d["sim_outcome"] = outcomes
+
+    eq = pd.DataFrame({"ts": d.get("sort_ts", pd.Series(np.arange(len(d)))), "equity": equities}).set_index("ts")
+    return d, eq
+# ===== Potential bets we would have made (Kelly-sized) =====
+st.subheader("Potential bets (Kelly stake > 0)")
+potential = sim_df.loc[pd.to_numeric(sim_df["sim_stake"], errors="coerce").fillna(0) > 0].copy()
+
+if potential.empty:
+    st.info("No potential bets under current Kelly/cap settings.")
+else:
+    pot_cols = []
+    for c in ["ts","sport","league","game_id","market","side","ref","american_odds","odds","p_win","sort_ts"]:
+        if c in potential.columns:
+            pot_cols.append(c)
+    pot_cols += ["sim_stake","sim_profit","sim_equity","sim_outcome"]
+
+    st.dataframe(potential[pot_cols], use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download potential_bets.csv",
+        data=potential.to_csv(index=False).encode("utf-8-sig"),
+        file_name="potential_bets.csv",
+        mime="text/csv"
+    )
+
+
+# ---------- Apply filters + sort ----------
+filtered = filter_edges(edges, seasons_pick, weeks_pick)
+if "sort_ts" in filtered.columns:
+    filtered = filtered.sort_values("sort_ts", ascending=not newest_first, na_position="last").reset_index(drop=True)
+
+# ---------- Pick columns for the sim (auto-fallback if UI controls don't exist yet) ----------
+cols = list(filtered.columns)
+p_col_used = locals().get("p_col", _pick_prob_col(cols)) or _pick_prob_col(cols) or ""
+o_col_used = locals().get("o_col", _pick_odds_col(cols)) or _pick_odds_col(cols) or ""
+
+kelly_frac_used = float(locals().get("kelly_frac", 0.25))  # quarter Kelly default
+cap_pct_used    = float(locals().get("cap_pct", 2.0))      # 2% cap default
+
+# ---------- Kelly simulation ALWAYS (drives everything below) ----------
+sim_df, eq_df = simulate_kelly(
+    filtered,
+    p_col=p_col_used,
+    o_col=o_col_used,
+    kelly_frac=kelly_frac_used,
+    cap_pct=cap_pct_used,
+    start_bankroll=start_bankroll,
+)
+
+# ---------- Metrics from simulated results ----------
+S = summary(sim_df.assign(profit=sim_df["sim_profit"], stake=sim_df["sim_stake"]))
+wins   = int((sim_df["sim_profit"] > 0).sum())
+losses = int((sim_df["sim_profit"] < 0).sum())
+pushes = int((sim_df["sim_profit"] == 0).sum())
+graded = wins + losses
+win_pct = (wins / graded) if graded > 0 else None
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Edges", f"{S['n']:,}")
+m2.metric("Stake Σ", f"{S['stake']:,.2f}")
+m3.metric("ROI", "-" if S["roi"] is None else f"{S['roi']*100:.1f}%")
+m4.metric("Win %", "-" if win_pct is None else f"{win_pct*100:.1f}%", help=f"W-L-P = {wins}-{losses}-{pushes}")
+
+# ---------- Equity curve ----------
+st.subheader("Equity curve")
+if sim_df.empty:
+    st.info("No edges match current filters.")
+else:
+    st.line_chart(eq_df, y="equity")
+
+# ---------- Results preview + download ----------
+st.subheader("Backtest results (Kelly-sized)")
+preview_cols = []
+for c in ["ts","sport","league","game_id","market","side","ref","odds","american_odds","p_win","result","sort_ts"]:
+    if c in sim_df.columns: preview_cols.append(c)
+preview_cols += ["sim_outcome","sim_stake","sim_profit","sim_equity"]
+st.dataframe(sim_df[preview_cols].head(100), use_container_width=True, hide_index=True)
+
+st.download_button(
+    "Download backtest_results.csv",
+    data=sim_df.to_csv(index=False).encode("utf-8-sig"),
+    file_name="backtest_results.csv",
+    mime="text/csv"
+)
+preview_cols += ["sim_outcome","sim_stake","sim_profit","sim_equity"]
+
+# =========================
+# Staking & Sizing
+# =========================
+st.subheader("Staking & Sizing")
+
+def _auto_prob_col(cols: list[str]) -> Optional[str]:
+    for c in ["p_win", "prob", "prob_win", "win_prob", "model_prob"]:
+        if c in cols: return c
+    return None
+
+def _auto_odds_col(cols: list[str]) -> Optional[str]:
+    for c in ["american_odds", "odds", "price", "line"]:
+        if c in cols: return c
+    return None
+
+def _to_decimal_odds(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    if s.abs().gt(5).mean() >= 0.5:
+        return s.apply(_american_to_decimal)
+    return s.where(s > 0, np.nan)
+
+def _kelly_fraction(p: float, dec_odds: float) -> float:
+    if not np.isfinite(p) or not np.isfinite(dec_odds): return np.nan
+    b = dec_odds - 1.0
+    if b <= 0: return np.nan
+    q = 1.0 - p
+    f = (b*p - q) / b
+    return float(f)
+
+def _breakeven_prob(dec_odds: float) -> float:
+    if not np.isfinite(dec_odds) or dec_odds <= 1: return np.nan
+    return 1.0 / dec_odds
+
+if filtered.empty:
+    st.info("No edges to size. Load/ETL first or adjust filters.")
+else:
+    cols = list(filtered.columns)
+    auto_p = _auto_prob_col(cols)
+    auto_o = _auto_odds_col(cols)
+
+    with st.expander("Staking controls", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            p_col = st.selectbox("Win probability column", options=cols, index=(cols.index(auto_p) if auto_p else 0))
+        with c2:
+            o_col = st.selectbox("Odds column (American or Decimal)", options=cols, index=(cols.index(auto_o) if auto_o else 0))
+        with c3:
+            kelly_frac = st.slider("Kelly fraction", 0.0, 1.0, 0.25, 0.05, help="0.25 = quarter Kelly")
+        with c4:
+            cap_pct = st.slider("Per-bet cap (% bankroll)", 0.0, 20.0, 2.0, 0.25)
+        c5, c6, c7 = st.columns(3)
+        with c5:
+            target_profit = st.number_input("Target profit per bet (units)", min_value=0.0, value=0.0, step=1.0,
+                                            help="If >0, compute stake to hit this profit at posted odds.")
+        with c6:
+            sort_conf = st.toggle("Sort by confidence", value=True,
+                                  help="Confidence = (p_win − 1/decimal_odds).")
+        with c7:
+            apply_btn = st.button("Apply sizing", type="primary")
+
+    sized = filtered.copy()
+    p = pd.to_numeric(sized[p_col], errors="coerce")
+    dec_odds = _to_decimal_odds(sized[o_col])
+
+    be = dec_odds.apply(_breakeven_prob)
+    conf = p - be
+    kelly_raw = pd.Series([_kelly_fraction(pi, oi) for pi, oi in zip(p.tolist(), dec_odds.tolist())],
+                          index=sized.index)
+    kelly_pos = kelly_raw.clip(lower=0.0)
+    stake_kelly = kelly_pos * kelly_frac * start_bankroll
+    stake_cap = (cap_pct/100.0) * start_bankroll
+    stake_kelly = stake_kelly.clip(upper=stake_cap)
+
+    if target_profit > 0:
+        stake_target = target_profit / (dec_odds - 1.0)
+    else:
+        stake_target = pd.Series(np.nan, index=sized.index)
+
+    sized["dec_odds"] = dec_odds
+    sized["p_win_used"] = p
+    sized["breakeven_p"] = be
+    sized["confidence"] = conf
+    sized["kelly_raw"] = kelly_raw
+    sized["stake_kelly"] = stake_kelly.round(2)
+    sized["stake_target_profit"] = pd.to_numeric(stake_target, errors="coerce").round(2)
+    sized["exp_profit_kelly"] = (sized["stake_kelly"] * (sized["dec_odds"] - 1.0) * sized["p_win_used"]).round(2)
+
+    if sort_conf:
+        sized = sized.sort_values(["confidence", "edge" if "edge" in sized.columns else "p_win_used"],
+                                  ascending=[False, False], na_position="last")
+
+    st.caption("Suggested staking per pick")
+    show_cols = []
+    for c in ["ts","sport","league","game_id","market","side","ref"]:
+        if c in sized.columns: show_cols.append(c)
+    show_cols += ["dec_odds","p_win_used","breakeven_p","confidence","stake_kelly","stake_target_profit","exp_profit_kelly"]
+    st.dataframe(sized[show_cols], use_container_width=True, hide_index=True)
+
+    st.download_button("Download sized picks.csv", data=sized.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="picks_sized.csv", mime="text/csv")
+
+# ---------- Ghost-leg parlay analysis ----------
+st.subheader("Ghost-leg parlay (near-miss) analysis")
+
+if filtered.empty:
+    st.info("Load edges with parlay identifiers to analyze near-misses.")
+else:
+    cols = list(filtered.columns)
+
+    auto_group = _find_first(cols, _PARLAY_CANDIDATES)
+    auto_result = _find_first(cols, _RESULT_CANDIDATES)
+    auto_odds = _find_first(cols, _ODDS_CANDIDATES)
+
+    with st.expander("Configuration", expanded=False):
+        group_col = st.selectbox("Parlay grouping column", options=["(none)"] + cols,
+                                 index=(0 if not auto_group else (["(none)"] + cols).index(auto_group)))
+        result_col = st.selectbox("Leg result column (win / loss / push)", options=["(auto from profit)"] + cols,
+                                  index=(0 if not auto_result else (["(auto from profit)"] + cols).index(auto_result)))
+        odds_col = st.selectbox("Odds column (American or Decimal)", options=["(auto)"] + cols,
+                                index=(0 if not auto_odds else (["(auto)"] + cols).index(auto_odds)))
+
+    use_group = None if group_col == "(none)" else group_col
+    use_result = None if result_col == "(auto from profit)" else result_col
+    use_odds = None if odds_col == "(auto)" else odds_col
+
+    near_df, rollup_df = compute_ghost_parlay_stats(filtered, use_group, use_result, use_odds)
+
+    if use_group is None:
+        st.warning("Pick a parlay grouping column to compute near-miss stats.")
+    elif near_df.empty:
+        st.info("No parlays found, or no near-misses (exactly one losing leg).")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Parlays", f"{int(rollup_df.at[0,'parlays']):,}")
+        with c2:
+            st.metric("Parlay wins", f"{int(rollup_df.at[0,'parlay_wins']):,}")
+        with c3:
+            st.metric("Near-miss (1 loss)", f"{int(rollup_df.at[0,'near_miss_parlays_(1_loss)']):,}")
+        with c4:
+            ghost_roi = rollup_df.at[0, "ghost_roi_est"]
+            st.metric("Ghost ROI (est.)", "-" if not np.isfinite(ghost_roi) else f"{ghost_roi*100:.1f}%")
+
+        st.caption("Near-miss parlays (drop the single losing leg; pushes = 1.0).")
+        cols_show = [use_group, "legs", "wins", "losses", "pushes", "ghost_decimal_mult", "parlay_stake_est", "ghost_profit_est"]
+        st.dataframe(near_df[cols_show], use_container_width=True, hide_index=True)
+
+        st.download_button("Download near-miss ghost payouts.csv",
+                           data=near_df.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="ghost_near_miss_parlays.csv", mime="text/csv")
+
+# ---------- Preview ----------
+st.subheader("Edges preview")
+st.dataframe(filtered, use_container_width=True, hide_index=True)
+st.download_button("Download filtered picks.csv",
+                   data=download_csv(filtered if not filtered.empty else edges),
+                   file_name="picks_filtered.csv", mime="text/csv")
+

@@ -1,0 +1,26 @@
+# python/venv
+.venv*/
+venv*/
+__pycache__/
+*.pyc
+# secrets
+.streamlit/secrets.toml
+.env
+*.env
+password.txt
+# big/local stuff
+data/
+db/
+logs/
+models/
+models_store/
+datasets/
+exports/
+private/
+backup*/
+bundles/
+*.zip
+*.bat
+*.ps1
+.kaggle/
+# anything else specific you know is large/private

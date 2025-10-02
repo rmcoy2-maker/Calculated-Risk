@@ -1,0 +1,55 @@
+# access.py — minimal stubs so pages can import app.lib.access
+# Place at: serving_ui/app/lib/access.py
+# These are safe, no-op defaults. You can expand later.
+
+from __future__ import annotations
+import os
+from typing import Iterable, Optional
+
+# Optional runtime toggle via env: set EDGE_LIVE_ENABLED=1 to enable live calls
+_ENV_LIVE = os.environ.get("EDGE_LIVE_ENABLED", "0").strip()
+
+def live_enabled() -> bool:
+    """Return True if live API fetches should run.
+    Defaults to False. Opt-in by setting env var EDGE_LIVE_ENABLED=1.
+    """
+    return _ENV_LIVE in ("1", "true", "TRUE", "yes", "on")
+
+
+def _get_allowed_pages_from_env() -> Optional[set[str]]:
+    raw = os.environ.get("EDGE_ALLOWED_PAGES", "").strip()
+    if not raw:
+        return None
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def require_allowed_page(page_name: str | None = None,
+                         allowed: Optional[Iterable[str]] = None) -> bool:
+    """Lightweight page gatekeeper.
+    - If an allowlist is provided (via `allowed` or env EDGE_ALLOWED_PAGES), return True only for those pages.
+    - Otherwise, allow everything (returns True).
+    Never raises; does not call st.stop(). Use return value if you want to block.
+    """
+    try:
+        # prefer explicit arg, else env var
+        allow = set(allowed) if allowed is not None else (_get_allowed_pages_from_env() or set())
+        if not allow:
+            return True
+        name = (page_name or "").strip()
+        return (name in allow) if name else True
+    except Exception:
+        return True
+
+
+def beta_banner(message: str | None = None) -> None:
+    """Optionally show a tiny banner when running in beta/testing.
+    Controlled by EDGE_BETA_BANNER env var. No-op if Streamlit isn't available.
+    """
+    try:
+        import streamlit as st  # local import so this module works outside Streamlit
+    except Exception:
+        return
+    msg = message or os.environ.get("EDGE_BETA_BANNER", "").strip()
+    if msg:
+        st.info(f"🧪 {msg}")
+

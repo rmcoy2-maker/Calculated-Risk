@@ -1,0 +1,99 @@
+﻿        from __future__ import annotations
+# --- path bootstrap: allow `import app.*` from any page ---
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from app.utils.logger import log_error
+import streamlit as st  # ensure st is available in except
+try:
+    from app.utils.logger import log_error
+    
+    try:
+        # app/pages/06_Edge_Viewer.py
+        from pathlib import Path
+        import pandas as pd
+        import streamlit as st
+        
+        from app.bootstrap import bootstrap_paths; bootstrap_paths()
+        from app.components.ui import find_file, normalize_cols, date_range_filter
+        from utils.tracking import log_event, log_suggestions
+        
+        st.set_page_config(page_title="ðŸ“Š Edge Viewer", layout="wide")
+        st.title("ðŸ“Š Edge Viewer")
+        
+        p_edges = find_file("edges.csv")
+        if not p_edges:
+            st.info("No `edges.csv` found. Drop it under `exports/` and refresh.")
+            st.stop()
+        
+        df = normalize_cols(pd.read_csv(p_edges))
+        # Common fields
+        if "odds" not in df.columns and "price" in df.columns:
+            df["odds"] = df["price"]
+        ts_col = next((c for c in ["event_time","ts","time","timestamp","kickoff","start_time"] if c in df.columns), None)
+        if ts_col:
+            df["event_time"] = pd.to_datetime(df[ts_col], errors="coerce")
+        else:
+            df["event_time"] = pd.NaT
+        
+        for c in ["edge","ev","p_win","odds","line","price","stake"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        
+        with st.expander("Filters", expanded=True):
+            c1, c2, c3, c4 = st.columns(4)
+            sports = sorted([x for x in df.get("sport", pd.Series(dtype=str)).dropna().unique() if str(x)])
+            leagues = sorted([x for x in df.get("league", pd.Series(dtype=str)).dropna().unique() if str(x)])
+            markets = sorted([x for x in df.get("market", pd.Series(dtype=str)).dropna().unique() if str(x)])
+        
+            pick_sport  = c1.multiselect("Sport",  sports, default=sports)
+            pick_league = c2.multiselect("League", leagues, default=leagues)
+            pick_market = c3.multiselect("Market", markets, default=markets)
+            min_edge    = c4.slider("Min edge (%)", -50.0, 50.0, 0.0, 0.5)
+            pos_only    = c4.checkbox("Positive EV only", value=True)
+        
+        f = df.copy()
+        if pick_sport and "sport" in f.columns:   f = f[f["sport"].isin(pick_sport)]
+        if pick_league and "league" in f.columns: f = f[f["league"].isin(pick_league)]
+        if pick_market and "market" in f.columns: f = f[f["market"].isin(pick_market)]
+        f = date_range_filter(f, "event_time", label="Event time")
+        if "edge" in f.columns: f = f[f["edge"].fillna(-1e9) >= float(min_edge)]
+        if pos_only and "ev" in f.columns: f = f[f["ev"].fillna(-1e9) > 0]
+        
+        disp_cols = [c for c in ["event_time","sport","league","game_id","market","ref","side","line","odds","p_win","edge","ev","book"] if c in f.columns]
+        table = f[disp_cols] if disp_cols else f
+        
+        st.dataframe(table, use_container_width=True)
+        st.download_button(
+            "Download filtered CSV",
+            data=table.to_csv(index=False).encode("utf-8"),
+            file_name="edges_filtered.csv",
+            mime="text/csv",
+        )
+        
+        # optional logging
+        try:
+            log_event("edge_viewer_opened", rows=len(table))
+            examples = (table.head(3)["ref"].astype(str).tolist() if "ref" in table.columns else table.head(3).astype(str).agg(" | ".join, axis=1).tolist())
+            log_suggestions("edge_viewer", examples, context="top3 after filters")
+        except Exception:
+            pass
+    except Exception as e:
+        log_error(e, context=__file__)
+        st.error(f"Page error: {e}")
+except Exception as e:
+    # log to file
+    try:
+        log_error(e, context=__file__)
+    except Exception:
+        pass
+    # show in UI if possible, else print
+    try:
+        st.error(f"Page error: {e}")
+    except Exception:
+        print(f"Page error: {e}")
+
+
+

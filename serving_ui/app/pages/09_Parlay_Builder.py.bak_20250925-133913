@@ -1,0 +1,572 @@
+def _read_fast_first_nonempty() -> pd.DataFrame:
+    paths = [EXPORTS / "edges_backtest.feather", EXPORTS / "edges_backtest.parquet"]
+    for p in paths:
+        try:
+            if p.exists():
+                df = pd.read_feather(p) if p.suffix == ".feather" else pd.read_parquet(p)
+                if not df.empty:
+                    # require at least one non-null 'odds'
+                    if "odds" in df.columns and pd.to_numeric(df["odds"], errors="coerce").notna().any():
+                        return df
+        except Exception:
+            pass
+    return pd.DataFrame()
+# -*- coding: utf-8 -*-
+# Parlay Builder — House + Computer with full-width layout and sticky-safe toolbar
+
+from pathlib import Path
+from datetime import datetime, timezone
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ---------------------------- Page chrome ----------------------------
+# Make the page truly wide and ensure our sticky toolbar never hides under the Streamlit header
+st.markdown(
+    """
+<style>
+  /* Use full viewport width and add a little side padding */
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+
+  /* Keep Streamlit header above everything; place our toolbar just beneath it */
+  [data-testid="stHeader"] { z-index: 9990; }
+  .ef-toolbar {
+    position: sticky;
+    top: 3.2rem;                /* ~header height; adjust if using a custom theme */
+    z-index: 9989;
+    background: var(--background-color, #0e1117);
+    border-bottom: 1px solid rgba(255,255,255,.08);
+    padding: .6rem .5rem .5rem .5rem;
+    margin: -0.5rem -0.5rem 1rem -0.5rem;
+  }
+  .ef-toolbar .stButton>button { height: 34px; padding: 0 .85rem; }
+  .ef-card { border: 1px solid rgba(255,255,255,.08); border-radius: .6rem; padding: .6rem .75rem .75rem .75rem; }
+  .ef-h3 { margin: .15rem 0 .4rem 0; font-weight: 700; }
+
+  /* On smaller screens, disable sticky so it doesn’t crowd */
+  @media (max-width: 1200px) {
+    .ef-toolbar { position: static; top: 0; }
+  }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+EXPORTS      = Path("exports")
+EDGES_CSV    = EXPORTS / "edges.csv"
+BET_SLIP_CSV = EXPORTS / "bet_slip.csv"
+BET_LOG_CSV  = EXPORTS / "bets_log.csv"
+
+# ----------------------------- IO helpers -----------------------------
+def read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    for kw in ({"encoding": "utf-8-sig"}, {}, {"engine": "python"}):
+        try:
+            return pd.read_csv(path, **kw)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+def write_csv_safe(df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+
+def append_csv_rows(rows: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    base = read_csv_safe(path)
+    df = pd.concat([base, rows], ignore_index=True) if not rows.empty else base
+    write_csv_safe(df, path)
+
+# ----------------------------- Odds helpers ----------------------------
+def am_to_dec(american) -> float | None:
+    try:
+        a = float(american)
+    except Exception:
+        return None
+    if a == 0:
+        return None
+    return 1.0 + (a / 100.0 if a > 0 else 100.0 / abs(a))
+
+def dec_to_am(decimal_odds: float) -> int | None:
+    if decimal_odds is None or decimal_odds <= 1:
+        return None
+    if decimal_odds >= 2:
+        return int(round((decimal_odds - 1.0) * 100))
+    return int(round(-100.0 / (decimal_odds - 1.0)))
+
+# ----------------------------- Load edges ------------------------------
+def load_edges() -> pd.DataFrame:
+    # Prefer fast caches if you created them
+    fast_paths = [EXPORTS / "edges_backtest.feather", EXPORTS / "edges_backtest.parquet"]
+    for p in fast_paths:
+        try:
+            if p.exists() and p.suffix == ".feather":
+                df = pd.read_feather(p)
+                break
+            if p.exists() and p.suffix == ".parquet":
+                df = pd.read_parquet(p)
+                break
+        except Exception:
+            continue
+    else:
+        # CSV fallbacks (graded → raw)
+        for p in [EXPORTS / "edges.csv", EXPORTS / "edges_graded_plus.csv", EXPORTS / "edges_graded.csv"]:
+            df = read_csv_safe(p)
+            if not df.empty:
+                break
+
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    def coalesce(df, names, default=None):
+        for n in names:
+            if n in df.columns:
+                return df[n]
+        return pd.Series([default]*len(df))
+
+    # Map → required columns
+    df["league"] = coalesce(df, ["league", "sport", "sportsbook_sport"]).astype(str)
+    df["market"] = coalesce(df, ["market", "bet_type", "market_type"]).astype(str)
+    df["ref"]    = coalesce(df, ["ref", "selection", "team", "label"]).astype(str)
+    df["side"]   = coalesce(df, ["side", "pick", "bet_side"]).astype(str)
+    df["game_id"]= coalesce(df, ["game_id", "gameid", "event_id", "match_id"]).astype(str)
+
+    # Normalize game_id (this line used to be after a return)
+    df["game_id"] = df["game_id"].str.strip().str.replace(r"\.0$", "", regex=True)
+
+    # sort_ts from a few candidates
+    ts = coalesce(df, ["sort_ts", "ts", "event_ts", "event_datetime", "game_time", "game_datetime"])
+    df["sort_ts"] = pd.to_datetime(ts, errors="coerce")
+
+    # Numeric coalescing
+    odds_raw = coalesce(df, ["odds", "american_odds", "price", "line_price"])
+    df["odds"] = pd.to_numeric(odds_raw, errors="coerce")
+
+    pwin_raw = coalesce(df, ["p_win", "prob", "win_prob", "model_prob", "p"])
+    df["p_win"] = pd.to_numeric(pwin_raw, errors="coerce")
+
+    ev_raw = coalesce(df, ["ev", "edge", "expected_value"])
+    df["ev"] = pd.to_numeric(ev_raw, errors="coerce")
+
+    # If EV missing but we have p_win and odds, compute single-leg EV ≈ p*d - 1
+    need_ev = df["ev"].isna() & df["p_win"].notna() & df["odds"].notna()
+    if need_ev.any():
+        # American → decimal
+        aa = df.loc[need_ev, "odds"].astype(float)
+        dec = np.where(aa >= 0, 1.0 + (aa/100.0), 1.0 + (100.0/np.abs(aa)))
+        df.loc[need_ev, "ev"] = df.loc[need_ev, "p_win"].astype(float) * dec - 1.0
+
+    return df
+
+
+
+
+# ----------------------------- House picks -----------------------------
+def _house_score(row: pd.Series) -> float:
+    ev = float(row.get("ev") or 0)
+    pw = float(row.get("p_win") or 0)
+    ods = abs(float(row.get("odds") or 0))
+    return (pw * (1.0 + max(ev, 0))) + (ods / 1500.0)
+
+def house_filter(df: pd.DataFrame, preset: str, min_p: float, min_ev: float, odds_min: int, odds_max: int) -> pd.DataFrame:
+    X = df.dropna(subset=["odds"]).copy()
+
+    # Use the UI thresholds directly; presets just set friendlier defaults in the sidebar
+    if preset == "Favorites":
+        X = X[(X["p_win"] >= min_p) & (X["odds"].between(-200, -110, inclusive="both")) & (X["ev"] >= min_ev)]
+    elif preset == "Longshots":
+        X = X[(X["odds"] >= 200) & (X["p_win"] >= min_p) & (X["ev"] >= min_ev)]
+    else:  # "Plus-EV" and "Custom" behave the same, driven by the sliders
+        X = X[(X["p_win"] >= min_p) & (X["ev"] >= min_ev) &
+              (X["odds"].abs().between(abs(odds_min), abs(odds_max), inclusive="both"))]
+
+    if X.empty:
+        return X
+
+    X["house_score"] = X.apply(_house_score, axis=1)
+    return X.sort_values("house_score", ascending=False).reset_index(drop=True)
+
+
+def to_house_display(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["pick", "sort_ts", "league", "market", "ref", "side", "odds", "p_win", "ev", "game_id"]
+    out = df.copy()
+    out.insert(0, "pick", True)
+    for c in cols:
+        if c not in out.columns:
+            out[c] = None
+    out = out[cols]
+    out["p_win"] = out["p_win"].map(lambda x: None if pd.isna(x) else round(float(x), 4))
+    out["ev"] = out["ev"].map(lambda x: None if pd.isna(x) else round(float(x), 4))
+    return out
+
+# ----------------------------- Computer suggestions -----------------------------
+def suggest_parlays(
+    df: pd.DataFrame,
+    leg_count: int = 3,
+    max_candidates: int = 3000,
+    min_p_win: float | None = None,
+    min_ev: float | None = None,
+    avoid_same_game: bool = True,
+    one_per_market_per_game: bool = True,
+) -> pd.DataFrame:
+    if df.empty or leg_count < 2:
+        return pd.DataFrame()
+
+    X = df.copy()
+    if min_p_win is not None:
+        X = X[X["p_win"] >= min_p_win]
+    if min_ev is not None:
+        X = X[X["ev"] >= min_ev]
+    X = X.dropna(subset=["odds"]).copy()
+    if X.empty:
+        return pd.DataFrame()
+
+    s_ev = X["ev"].fillna(0).clip(lower=0)
+    s_pw = X["p_win"].fillna(0)
+    s_od = X["odds"].abs().fillna(0) / 1000.0
+    X["score"] = (s_pw * (1.0 + s_ev)) + s_od
+    X = X.sort_values("score", ascending=False).head(max(leg_count * 80, 400))
+
+    if one_per_market_per_game and {"game_id", "market"}.issubset(X.columns):
+        X = X.sort_values("score", ascending=False).drop_duplicates(["game_id", "market"], keep="first")
+
+    rows = []
+    pool = X.to_dict("records")
+    n_pool, tested = len(pool), 0
+    from itertools import combinations as comb
+
+    for combo in comb(range(n_pool), leg_count):
+        tested += 1
+        if tested > max_candidates:
+            break
+        legs = [pool[i] for i in combo]
+
+        if avoid_same_game and "game_id" in X.columns:
+            if len({str(l.get("game_id")) for l in legs}) < leg_count:
+                continue
+
+        decs = [am_to_dec(l.get("odds")) for l in legs]
+        if any(d is None for d in decs):
+            continue
+
+        parlay_dec = float(np.prod(decs))
+        parlay_amer = dec_to_am(parlay_dec)
+        pw = [float(l.get("p_win") or 0) for l in legs]
+        p_parlay = float(np.prod(pw)) if all(pw) else None
+        exp_profit = None if p_parlay is None else p_parlay * parlay_dec - 1.0
+
+        rows.append(
+            dict(
+                pick=True,
+                legs=len(legs),
+                parlay_decimal=parlay_dec,
+                parlay_american=parlay_amer,
+                exp_p=p_parlay,
+                exp_profit=exp_profit,
+                picks=" | ".join(
+                    f"{l.get('market','')}:{l.get('side','')} @{int(l.get('odds')) if not pd.isna(l.get('odds')) else '?'}"
+                    for l in legs
+                ),
+                legs_detail=legs,
+            )
+        )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values("exp_profit", ascending=False, na_position="last").reset_index(drop=True)
+
+def comp_display(sug: pd.DataFrame) -> pd.DataFrame:
+    if sug.empty:
+        return pd.DataFrame(columns=["pick", "legs", "parlay_decimal", "parlay_american", "exp_p", "exp_profit", "picks"])
+    show = sug[["pick", "legs", "parlay_decimal", "parlay_american", "exp_p", "exp_profit", "picks"]].copy()
+    show["parlay_decimal"] = show["parlay_decimal"].map(lambda x: f"{x:.4f}")
+    show["exp_p"] = show["exp_p"].map(lambda x: "-" if pd.isna(x) else f"{x:.4f}")
+    show["exp_profit"] = show["exp_profit"].map(lambda x: "-" if pd.isna(x) else f"{x:.4f}")
+    return show
+
+# -------------------------- Normalizer for storage --------------------------
+def normalize_for_store(df: pd.DataFrame, src: str) -> pd.DataFrame:
+    cols = ["ts", "league", "market", "ref", "side", "odds", "p_win", "ev", "game_id", "source"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    now = datetime.now(timezone.utc).isoformat()
+    out = df.copy()
+    out["ts"] = now
+    out["source"] = src
+    for c in cols:
+        if c not in out.columns:
+            out[c] = None
+    return out[cols]
+
+# ------------------------------- Data + sorting -------------------------------
+st.title("Parlay Builder — House + Computer")
+
+edges = load_edges()
+if not edges.empty and "sort_ts" in edges.columns:
+    edges = edges.sort_values("sort_ts", ascending=False, na_position="last").reset_index(drop=True)
+
+# ------------------------------- Sticky toolbar -------------------------------
+with st.container():
+    st.markdown('<div class="ef-toolbar">', unsafe_allow_html=True)
+    tb1, tb2, tb3, tb4, tb5 = st.columns([1.1, 1.5, 1.6, 1.2, 1.0])
+    with tb1:
+        st.toggle("Newest first", value=True, key="pb_newest", help="Sort tables by most recent.")
+    with tb2:
+        commit_slip = st.button("Commit Slip → Bet Log", use_container_width=True)
+    with tb3:
+        clear_slip = st.button("Clear Bet Slip", use_container_width=True)
+    with tb4:
+        st.caption("Preview stake")
+        stake_preview = st.number_input("", min_value=0.0, value=1.0, step=0.5, label_visibility="collapsed")
+    with tb5:
+        refresh = st.button("Refresh", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ------------------------------- Two columns -------------------------------
+left, right = st.columns([1, 1])
+
+# ---- HOUSE (left) ----
+with left:
+    st.markdown('<div class="ef-card">', unsafe_allow_html=True)
+    st.markdown('<h3 class="ef-h3">🏠 House Picks</h3>', unsafe_allow_html=True)
+
+    h1, h2, h3 = st.columns([1, 1, 1])
+    with h1:
+        preset = st.selectbox("Preset", ["Plus-EV", "Favorites", "Longshots", "Custom"], index=0)
+    with h2:
+        min_p = st.number_input(
+            "Min p_win", 0.0, 1.0, 0.45 if preset == "Plus-EV" else (0.58 if preset == "Favorites" else 0.35 if preset == "Longshots" else 0.50), 0.00
+        )
+    with h3:
+        min_ev = st.number_input("Min EV", 0.0, 5.0, 0.00 if preset in ("Plus-EV", "Longshots") else 0.0, 0.01)
+    odds_min, odds_max = st.slider("Abs(odds) window", 0, 1000, (110 if preset == "Favorites" else 100, 200 if preset == "Favorites" else 300))
+
+    house = house_filter(edges, preset, float(min_p), float(min_ev), int(odds_min), int(odds_max))
+    house_view = to_house_display(house) if not house.empty else pd.DataFrame(
+        columns=["pick", "sort_ts", "league", "market", "ref", "side", "odds", "p_win", "ev", "game_id"]
+    )
+
+    house_tbl = st.data_editor(
+        house_view,
+        key="house_tbl",
+        hide_index=True,
+        use_container_width=True,
+        height=380,
+        column_config={"pick": st.column_config.CheckboxColumn("pick", default=True)},
+    )
+
+    a1, a2 = st.columns([1, 1])
+    with a1:
+        add_house = st.button("Add selected (House) → Bet Slip", type="primary", use_container_width=True)
+    with a2:
+        sel_house = house_tbl[house_tbl.get("pick", False) == True].copy() if not house_tbl.empty else pd.DataFrame()
+        if not sel_house.empty and len(sel_house) >= 2:
+            decs = [am_to_dec(o) for o in pd.to_numeric(sel_house["odds"], errors="coerce")]
+            parlay_dec = float(np.prod(decs)) if all(d is not None for d in decs) else None
+            st.metric("Preview", "-" if parlay_dec is None else f"Dec {parlay_dec:.4f}  |  +{stake_preview*parlay_dec - stake_preview:,.2f}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---- COMPUTER (right) ----
+with right:
+    st.markdown('<div class="ef-card">', unsafe_allow_html=True)
+    st.markdown('<h3 class="ef-h3">🤖 Computer Suggestions</h3>', unsafe_allow_html=True)
+
+    c0, c1, c2 = st.columns([1, 1, 1])
+    with c0:
+        legs = st.slider("Legs", 2, 8, 3, 1)
+    with c1:
+        min_p2 = st.number_input("Min p_win (legs)", 0.0, 1.0, 0.50, 0.01)
+    with c2:
+        min_ev2 = st.number_input("Min EV (legs)", 0.0, 5.0, 0.00, 0.01)
+
+    c3, c4, c5 = st.columns([1, 1, 1])
+    with c3:
+        avoid_same = st.checkbox("Avoid same game", True)
+    with c4:
+        one_per_mkt = st.checkbox("One per market per game", True)
+    with c5:
+        max_c = st.number_input("Max combos", 200, 20000, 3000, 100)
+
+    find_sug = st.button("Find suggestions", type="primary", use_container_width=False)
+    if find_sug:
+        st.session_state["_sugs"] = suggest_parlays(
+            edges,
+            leg_count=int(legs),
+            max_candidates=int(max_c),
+            min_p_win=float(min_p2) if min_p2 > 0 else None,
+            min_ev=float(min_ev2) if min_ev2 > 0 else None,
+            avoid_same_game=bool(avoid_same),
+            one_per_market_per_game=bool(one_per_mkt),
+        )
+
+    sugs = st.session_state.get("_sugs", pd.DataFrame())
+    comp_view = comp_display(sugs)
+    comp_tbl = st.data_editor(
+        comp_view,
+        key="comp_tbl",
+        hide_index=True,
+        use_container_width=True,
+        height=380,
+        column_config={"pick": st.column_config.CheckboxColumn("pick", default=True)},
+    )
+    add_comp = st.button("Add selected (Computer) → Bet Slip", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ------------------------ Bet Slip / Log actions ------------------------
+def _rows_from_house(sel: pd.DataFrame) -> pd.DataFrame:
+    return sel[["league", "market", "ref", "side", "odds", "p_win", "ev", "game_id"]].copy()
+
+def _rows_from_comp(sel: pd.DataFrame) -> pd.DataFrame:
+    if sel.empty:
+        return pd.DataFrame(columns=["league", "market", "ref", "side", "odds", "p_win", "ev", "game_id"])
+    sugs = st.session_state.get("_sugs", pd.DataFrame())
+    out = []
+    for idx, _ in sel.iterrows():
+        legs = sugs.iloc[idx]["legs_detail"] if "legs_detail" in sugs.columns else []
+        for l in legs:
+            out.append(
+                {
+                    "league": l.get("league"),
+                    "market": l.get("market"),
+                    "ref": l.get("ref"),
+                    "side": l.get("side"),
+                    "odds": l.get("odds"),
+                    "p_win": l.get("p_win"),
+                    "ev": l.get("ev"),
+                    "game_id": l.get("game_id"),
+                }
+            )
+    return pd.DataFrame(out)
+
+if add_house:
+    chosen = house_tbl[house_tbl.get("pick", False) == True].copy()
+    if chosen.empty:
+        st.info("No House rows checked.")
+    else:
+        append_csv_rows(normalize_for_store(_rows_from_house(chosen), "house_picks"), BET_SLIP_CSV)
+        st.success(f"Added {len(chosen)} House picks to Bet Slip")
+
+if add_comp:
+    chosen = comp_tbl[comp_tbl.get("pick", False) == True].copy()
+    if chosen.empty:
+        st.info("No Computer rows checked.")
+    else:
+        rows = _rows_from_comp(chosen)
+        if rows.empty:
+            st.info("Selected suggestions resolved to zero legs.")
+        else:
+            append_csv_rows(normalize_for_store(rows, "computer_suggestions"), BET_SLIP_CSV)
+            st.success(f"Added {len(rows)} legs from Computer suggestions to Bet Slip")
+
+if commit_slip:
+    slip = read_csv_safe(BET_SLIP_CSV)
+    if slip.empty:
+        st.info("Bet Slip is empty.")
+    else:
+        append_csv_rows(slip, BET_LOG_CSV)
+        write_csv_safe(pd.DataFrame(columns=slip.columns), BET_SLIP_CSV)
+        st.success(f"Committed {len(slip)} bets to Bet Log and cleared the slip.")
+
+if clear_slip:
+    cols = ["ts", "league", "market", "ref", "side", "odds", "p_win", "ev", "game_id", "source"]
+    write_csv_safe(pd.DataFrame(columns=cols), BET_SLIP_CSV)
+    st.warning("Bet Slip cleared.")
+
+# ------------------------ Bet Slip table (full width) -------------------
+st.markdown('<div class="ef-card">', unsafe_allow_html=True)
+st.subheader("Current Bet Slip")
+current_slip = read_csv_safe(BET_SLIP_CSV)
+if current_slip.empty:
+    st.info("Bet Slip is empty.")
+else:
+    st.dataframe(current_slip, use_container_width=True, hide_index=True, height=320)
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+
+def load_edges() -> pd.DataFrame:
+    # Fast cache only if it actually contains odds rows
+    df = _read_fast_first_nonempty()
+    if df.empty:
+        for p in [EXPORTS / "edges.csv", EXPORTS / "edges_graded_plus.csv", EXPORTS / "edges_graded.csv"]:
+            df = read_csv_safe(p)
+            if not df.empty:
+                break
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    def coalesce(names, default=None):
+        for n in names:
+            if n in df.columns:
+                return df[n]
+        return pd.Series([default] * len(df))
+
+    # Core text fields
+    df["league"] = coalesce(["league","sport","sportsbook_sport"]).astype(str)
+    df["market"] = coalesce(["market","bet_type","market_type"]).astype(str)
+    df["ref"]    = coalesce(["ref","selection","team","label"]).astype(str)
+    df["side"]   = coalesce(["side","pick","bet_side"]).astype(str)
+    df["game_id"]= coalesce(["game_id","gameid","event_id","match_id"]).astype(str).str.strip().str.replace(r"\.0$","",regex=True)
+
+    # Timestamps (best-effort)
+    ts = coalesce(["sort_ts","ts","event_ts","event_datetime","game_time","game_datetime"])
+    df["sort_ts"] = pd.to_datetime(ts, errors="coerce")
+
+    # Numbers
+    df["odds"]  = pd.to_numeric(coalesce(["odds","american_odds","price","line_price"]), errors="coerce")
+    df["p_win"] = pd.to_numeric(coalesce(["p_win","prob","win_prob","model_prob","p"]), errors="coerce")
+    df["ev"]    = pd.to_numeric(coalesce(["ev","edge","expected_value"]), errors="coerce")
+
+    # Fallbacks so presets still populate
+    need_p = df["p_win"].isna() & df["odds"].notna()
+    if need_p.any():
+        aa = df.loc[need_p, "odds"].astype(float)
+        dec = np.where(aa >= 0, 1.0 + (aa/100.0), 1.0 + (100.0/np.abs(aa)))
+        df.loc[need_p, "p_win"] = 1.0 / dec   # market-implied prob (not model)
+
+    df["ev_filt"] = df["ev"].fillna(0.0)      # treat missing EV as 0 for filtering
+
+    return df
+
+def house_filter(df: pd.DataFrame, preset: str, min_p: float, min_ev: float,
+                 abs_odds_min: int, abs_odds_max: int) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    work = df.copy()
+    work = work[pd.to_numeric(work.get("odds"), errors="coerce").notna()]
+    work["odds"] = work["odds"].astype(float)
+
+    ao = work["odds"].abs()
+    work = work[(ao >= abs_odds_min) & (ao <= abs_odds_max)]
+
+    work["_p"]  = pd.to_numeric(work.get("p_win"), errors="coerce")
+    work["_ev"] = pd.to_numeric(work.get("ev_filt", work.get("ev")), errors="coerce").fillna(0.0)
+
+    pr = (preset or "").strip().lower()
+
+    if pr == "favorites":
+        base = (work["odds"] <= -110) & (work["odds"] >= -200)
+        cond = base & (work["_p"].fillna(min_p) >= min_p)  # if p_win missing, allow via slider default
+        work = work[cond]
+
+    elif pr == "longshots":
+        base = (work["odds"] >= 200)
+        cond = base & (work["_p"].fillna(min_p) >= min_p) & (work["_ev"] >= min_ev)
+        work = work[cond]
+
+    elif pr == "computer picks":
+        work = work[(work["_ev"] >= min_ev) & (work["_p"].fillna(min_p) >= min_p)]
+
+    else:  # custom
+        work = work[(work["_p"].fillna(min_p) >= min_p) & (work["_ev"] >= min_ev)]
+
+    return work.drop(columns=["_p","_ev"], errors="ignore")

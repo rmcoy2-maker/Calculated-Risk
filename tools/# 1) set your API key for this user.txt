@@ -1,0 +1,17 @@
+# 1) set your API key for this user (restart PowerShell after setx)
+setx ODDS_API_KEY "109093b594be16dcc337624f7202c318"
+
+# 2) activate your venv (you already have it)
+.\.venv\Scripts\Activate.ps1
+
+# 3) install requests if you haven’t
+pip install requests pandas
+
+# 4) run for the 2020s
+.\.venv\Scripts\python.exe .\fetch_odds_2020s.py
+
+$env:THE_ODDS_API_KEY = "109093b594be16dcc337624f7202c318"
+
+$env:THE_ODDS_API_KEY = "109093b594be16dcc337624f7202c318"
+.\.venv\Scripts\python.exe tools\pull_props_oddsapi.py
+.\.venv\Scripts\python.exe tools\compute_open_close_props.py

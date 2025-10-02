@@ -1,0 +1,160 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+try:
+    pass
+except Exception:
+    pass
+st.markdown('\n<style>\n  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }\n  [data-testid="stHeader"] { z-index: 9990; }\n</style>\n', unsafe_allow_html=True)
+try:
+    from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+except Exception:
+    try:
+        from utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+    except Exception:
+
+        def __nfp_apply(_):
+            return
+__nfp_apply(st)
+from app.bootstrap import bootstrap_paths
+bootstrap_paths()
+import sys as _sys
+from pathlib import Path as _Path
+try:
+    _ROOT = _Path(__file__).resolve().parents[2]
+    _REPO = _ROOT.parents[1]
+    if str(_REPO) not in _sys.path:
+        _sys.path.insert(0, str(_REPO))
+except Exception:
+    pass
+import pandas as pd
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+EXPORTS = ROOT / 'exports'
+st.header('Diagnostics')
+st.write('Repo root:', ROOT)
+st.write('Exports dir:', EXPORTS)
+files = ['bets_log.csv', 'parlays.csv', 'edges.csv']
+for name in files:
+    p = EXPORTS / name
+    st.subheader(name)
+    st.write('Exists:', p.exists(), ' Size:', p.stat().st_size if p.exists() else 0)
+    if p.exists() and p.stat().st_size > 0:
+        try:
+            df = pd.read_csv(p, nrows=3)
+            st.dataframe(df, width='stretch')
+        except Exception as e:
+            st.warning(f'Could not read: {e}')
+import sys, platform, json
+from pathlib import Path
+st.title('🩺 Diagnostics')
+st.subheader('Environment')
+st.write({'Python version': sys.version, 'Platform': platform.platform(), 'Executable': sys.executable, 'Working dir': str(Path.cwd()), 'Sys.path[0]': sys.path[0]})
+st.subheader('Packages')
+pkgs = {}
+for name in ['streamlit', 'pandas', 'numpy', 'matplotlib', 'scikit_learn']:
+    try:
+        mod = __import__(name.replace('-', '_'))
+        pkgs[name] = getattr(mod, '__version__', 'unknown')
+    except Exception as e:
+        pkgs[name] = f'missing ({e})'
+st.json(pkgs)
+st.subheader('Matplotlib Test')
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    x = np.linspace(0, 2 * np.pi, 200)
+    y = np.sin(x)
+    fig, ax = plt.subplots()
+    ax.plot(x, y, label='sin(x)')
+    ax.set_title('Matplotlib test plot')
+    ax.legend()
+    st.pyplot(fig)
+except Exception as e:
+    st.error(f'Matplotlib failed: {e}')
+st.subheader('Project Files')
+REPO_ROOT = Path(__file__).resolve().parents[2]
+exports = REPO_ROOT / 'exports'
+files = {'bets_log.csv': exports / 'bets_log.csv', 'parlays.csv': exports / 'parlays.csv', 'bankroll.csv': exports / 'bankroll.csv', 'edges.csv': exports / 'edges.csv', 'settled.csv': exports / 'settled.csv'}
+import pandas as pd
+for label, path in files.items():
+    if not path.exists():
+        st.warning(f'❌ {label} not found at {path}')
+        continue
+    try:
+        df = pd.read_csv(path)
+        st.success(f'✅ {label}: {len(df)} rows, {len(df.columns)} cols')
+        st.dataframe(df.head(5), hide_index=True, width='stretch')
+    except Exception as e:
+        st.error(f'⚠️ {label} exists but failed to read: {e}')
+st.subheader('Streamlit Session State')
+if st.session_state:
+    st.json({k: str(v) for k, v in st.session_state.items()})
+else:
+    st.info('Session state is empty.')
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+

@@ -1,0 +1,436 @@
+from __future__ import annotations
+# === AppImportGuard (nuclear) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+
+    base = None
+    auth_path = None
+    for p in [here] + list(here.parents):
+        cand1 = p / "app" / "lib" / "auth.py"
+        cand2 = p / "serving_ui" / "app" / "lib" / "auth.py"
+        if cand1.exists():
+            base, auth_path = p, cand1
+            break
+        if cand2.exists():
+            base, auth_path = (p / "serving_ui"), cand2
+            break
+
+    if base and auth_path:
+        s = str(base)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            from app.lib.auth import login, show_logout  # type: ignore
+        except ModuleNotFoundError:
+            import types, importlib.util
+            if "app" not in sys.modules:
+                pkg_app = types.ModuleType("app")
+                pkg_app.__path__ = [str(Path(base) / "app")]
+                sys.modules["app"] = pkg_app
+            if "app.lib" not in sys.modules:
+                pkg_lib = types.ModuleType("app.lib")
+                pkg_lib.__path__ = [str(Path(base) / "app" / "lib")]
+                sys.modules["app.lib"] = pkg_lib
+            spec = importlib.util.spec_from_file_location("app.lib.auth", str(auth_path))
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            sys.modules["app.lib.auth"] = mod
+            login = mod.login
+            show_logout = mod.show_logout
+    else:
+        raise
+# === /AppImportGuard ===
+
+
+import streamlit as st
+auth = login(required=False)
+if not auth.authenticated:
+    st.info('You are in read-only mode.')
+show_logout()
+from pathlib import Path
+import re
+import numpy as np
+import pandas as pd
+import os
+st.set_page_config(page_title='Backtest — Scores Browser', layout='wide')
+
+
+
+
+# === Nudge+Session (auto-injected) ===
+try:
+    from app.utils.nudge import begin_session, touch_session, session_duration_str, bump_usage, show_nudge  # type: ignore
+except Exception:
+    def begin_session(): pass
+    def touch_session(): pass
+    def session_duration_str(): return ""
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Initialize/refresh session and show live duration
+begin_session()
+touch_session()
+if hasattr(st, "sidebar"):
+    st.sidebar.caption(f"🕒 Session: {session_duration_str()}")
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Optional upsell banner after threshold interactions in last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge+Session (auto-injected) ===
+
+# === Nudge (auto-injected) ===
+try:
+    from app.utils.nudge import bump_usage, show_nudge  # type: ignore
+except Exception:
+    bump_usage = lambda *a, **k: None
+    def show_nudge(*a, **k): pass
+
+# Count a lightweight interaction per page load
+bump_usage("page_visit")
+
+# Show a nudge once usage crosses threshold in the last 24h
+show_nudge(feature="analytics", metric="page_visit", threshold=10, period="1D", demo_unlock=True, location="inline")
+# === /Nudge (auto-injected) ===
+
+BUILD_TAG = 'backtest-std-gid-v2'
+
+def _exports_dir() -> Path:
+    here = Path(__file__).resolve()
+    for up in [here.parent] + list(here.parents):
+        cand = up / 'exports'
+        if cand.exists():
+            return cand
+    cand = Path.cwd() / 'exports'
+    cand.mkdir(parents=True, exist_ok=True)
+    return cand
+ALIAS = {'REDSKINS': 'COMMANDERS', 'WASHINGTON': 'COMMANDERS', 'FOOTBALL': 'COMMANDERS', 'WFT': 'COMMANDERS', 'OAKLAND': 'RAIDERS', 'LV': 'RAIDERS', 'LVR': 'RAIDERS', 'LAS': 'RAIDERS', 'VEGAS': 'RAIDERS', 'SD': 'CHARGERS', 'SAN': 'CHARGERS', 'DIEGO': 'CHARGERS', 'LA': 'CHARGERS', 'LOS': 'CHARGERS', 'ANGELES': 'CHARGERS', 'ST': 'RAMS', 'LOUIS': 'RAMS', 'NINERS': '49ERS', 'NO': 'SAINTS', 'NOLA': 'SAINTS', 'JAX': 'JAGUARS', 'NE': 'PATRIOTS', 'N.E.': 'PATRIOTS', 'NYJ': 'JETS', 'NYG': 'GIANTS', 'TB': 'BUCCANEERS', 'TBAY': 'BUCCANEERS', 'KC': 'CHIEFS', 'S.D.': 'CHARGERS', 'L.A.': 'RAMS'}
+
+def _nickify(x: str) -> str:
+    x = (str(x) or '').strip().upper()
+    if not x:
+        return ''
+    last = x.split()[-1]
+    return ALIAS.get(last, last)
+
+def _norm_market(m):
+    m = (str(m) or '').strip().lower()
+    if m in {'h2h', 'ml', 'moneyline', 'money line'}:
+        return 'H2H'
+    if m.startswith('spread'):
+        return 'SPREADS'
+    if m.startswith('total'):
+        return 'TOTALS'
+    return m.upper()
+
+def _american_profit(stake: float, odds: float, result: str) -> float:
+    res = (result or '').lower()
+    if res in ('push', 'void', 'cancel'):
+        return 0.0
+    if res != 'win':
+        return -float(stake or 0.0)
+    o = float(odds or 0.0)
+    if o > 0:
+        return float(stake) * (o / 100.0)
+    if o < 0:
+        return float(stake) * (100.0 / abs(o))
+    return 0.0
+
+def _ensure_game_id(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    cols = {c.lower(): c for c in d.columns}
+    date_cols = ('dateiso', '_dateiso', '_date', 'date', 'game_date', 'commence_time', 'commencetime', '_date_iso')
+    date_ser = None
+    for k in date_cols:
+        c = cols.get(k)
+        if c and c in d:
+            s = pd.to_datetime(d[c], errors='coerce', utc=True).dt.tz_localize(None)
+            if s.notna().any():
+                date_ser = s.dt.date.astype('string')
+                break
+    if date_ser is None and 'season' in d and ('week' in d):
+        date_ser = 'SW-' + d['season'].astype(str) + '-' + d['week'].astype(str)
+    if date_ser is None:
+        date_ser = pd.Series(['NA'] * len(d), index=d.index, dtype='string')
+
+    def first(*names):
+        for n in names:
+            c = cols.get(n.lower())
+            if c and c in d:
+                return d[c].astype(str)
+        return pd.Series([''] * len(d), index=d.index)
+    home = first('_home_nick', 'home_team', 'hometeam', 'home', 'home_team_name').map(_nickify)
+    away = first('_away_nick', 'away_team', 'awayteam', 'away', 'away_team_name').map(_nickify)
+    if '_home_nick' not in d:
+        d['_home_nick'] = home
+    else:
+        d['_home_nick'] = d['_home_nick'].astype(str).replace({'nan': ''}).where(d['_home_nick'].astype(str).ne(''), home)
+    if '_away_nick' not in d:
+        d['_away_nick'] = away
+    else:
+        d['_away_nick'] = d['_away_nick'].astype(str).replace({'nan': ''}).where(d['_away_nick'].astype(str).ne(''), away)
+    d['_date_iso'] = date_ser
+    d['game_id'] = (d['_date_iso'].fillna('').astype(str) + '_' + d['_away_nick'].fillna('').astype(str) + '_AT_' + d['_home_nick'].fillna('').astype(str)).str.replace('__AT_', '_AT_', regex=False)
+    return d
+
+@st.cache_data(ttl=120)
+def load_edges() -> tuple[pd.DataFrame, Path]:
+    exp = _exports_dir()
+    env = os.environ.get('EDGE_SOURCE_FILE', '').strip()
+    if env and Path(env).exists():
+        df = pd.read_csv(env, low_memory=False, encoding='utf-8-sig')
+        return (df, Path(env))
+    preferred = ['edges_repaired.csv', 'edges_graded_full_normalized_std.csv', 'edges_graded_full_std.csv', 'edges_graded_full_normalized_dated.csv', 'edges_graded_full_normalized.csv', 'edges_graded_full.csv', 'edges_graded_plus.csv', 'edges_graded.csv', 'edges.csv']
+    for name in preferred:
+        p = exp / name
+        if p.exists() and p.stat().st_size > 256:
+            df = pd.read_csv(p, low_memory=False, encoding='utf-8-sig')
+            if not df.empty:
+                return (df, p)
+    return (pd.DataFrame(), exp / preferred[0])
+
+@st.cache_data(ttl=120)
+def load_scores() -> tuple[pd.DataFrame, Path]:
+    exp = _exports_dir()
+    candidates = ['scores_clean_std.csv', 'scores_normalized_std.csv', 'scores_normalized.csv', 'scores_clean.csv', 'scores_1966-2025.csv', 'scores.csv']
+    for name in candidates:
+        p = exp / name
+        if p.exists() and p.stat().st_size > 256:
+            df = pd.read_csv(p, low_memory=False, encoding='utf-8-sig')
+            if not df.empty:
+                return (df, p)
+    return (pd.DataFrame(), exp / candidates[0])
+
+def _grade_row(row, hs, as_, mkt_norm):
+    hn, an = (row.get('_home_nick', ''), row.get('_away_nick', ''))
+    side = (str(row.get('side', '')) or '').strip().lower()
+    pick = _nickify(row.get('_pick_team', ''))
+    if mkt_norm == 'H2H':
+        if side in ('home', 'h'):
+            pick = hn
+        elif side in ('away', 'a'):
+            pick = an
+        if not pick:
+            cand = _nickify(side)
+            if cand in (hn, an):
+                pick = cand
+        if not pick:
+            return 'void'
+        if hs == as_:
+            return 'push'
+        winner = hn if hs > as_ else an
+        return 'win' if pick == winner else 'loss'
+    if mkt_norm == 'SPREADS':
+        try:
+            line = float(row.get('line'))
+        except Exception:
+            return 'void'
+        if side in ('home', 'h'):
+            team = hn
+        elif side in ('away', 'a'):
+            team = an
+        else:
+            team = pick or _nickify(side)
+        if not team:
+            return 'void'
+        diff = hs - as_ - line if team == hn else as_ - hs - line
+        return 'win' if diff > 0 else 'push' if diff == 0 else 'loss'
+    if mkt_norm == 'TOTALS':
+        try:
+            line = float(row.get('line'))
+        except Exception:
+            return 'void'
+        total = (hs or 0) + (as_ or 0)
+        if side in ('o', 'over'):
+            comp = total - line
+        elif side in ('u', 'under'):
+            comp = line - total
+        else:
+            return 'void'
+        return 'win' if comp > 0 else 'push' if comp == 0 else 'loss'
+    return 'void'
+
+def settle_bets(edges: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    e = _ensure_game_id(edges)
+    sc = _ensure_game_id(scores)
+    e['market_norm'] = e.get('market', '').astype(str).map(_norm_market)
+    for df in (e, sc):
+        if 'season' in df:
+            df['season'] = df['season'].astype(str)
+        if 'week' in df:
+            df['week'] = df['week'].astype(str)
+    scol = {c.lower(): c for c in sc.columns}
+    hsc = scol.get('home_score') or scol.get('homescore')
+    asc = scol.get('away_score') or scol.get('awayscore')
+    if not hsc or not asc:
+        raise ValueError('Scores must contain home_score and away_score columns.')
+    merged = e.merge(sc[['game_id', hsc, asc]], on='game_id', how='left')
+    try:
+        overlap = set(e['game_id'].dropna()) & set(sc['game_id'].dropna())
+        st.caption(f"game_id overlap: {len(overlap):,} (edges {e['game_id'].nunique():,} · scores {sc['game_id'].nunique():,})")
+    except Exception:
+        pass
+    merged['_key_home'] = e['_home_nick'].astype(str) + '@' + e['_date_iso'].astype(str)
+    merged['_key_away'] = e['_away_nick'].astype(str) + '@' + e['_date_iso'].astype(str)
+    sc['_key_home'] = sc['_home_nick'].astype(str) + '@' + sc['_date_iso'].astype(str)
+    sc['_key_away'] = sc['_away_nick'].astype(str) + '@' + sc['_date_iso'].astype(str)
+    missing = merged[hsc].isna() | merged[asc].isna()
+    if missing.any():
+        date_tbl = sc[['_key_home', '_key_away', hsc, asc]].dropna(subset=['_key_home', '_key_away']).drop_duplicates(['_key_home', '_key_away'], keep='last')
+        looked = merged.loc[missing, ['_key_home', '_key_away']].merge(date_tbl, on=['_key_home', '_key_away'], how='left')[[hsc, asc]]
+        merged.loc[missing, [hsc, asc]] = looked.values
+    missing = merged[hsc].isna() | merged[asc].isna()
+    if missing.any():
+        merged['key_home_sw'] = e['_home_nick'].astype(str) + '|' + e.get('season', '').astype(str) + '|' + e.get('week', '').astype(str)
+        merged['key_away_sw'] = e['_away_nick'].astype(str) + '|' + e.get('season', '').astype(str) + '|' + e.get('week', '').astype(str)
+        sc_sw_home = sc['_home_nick'].astype(str) + '|' + sc.get('season', '').astype(str) + '|' + sc.get('week', '').astype(str)
+        sc_sw_away = sc['_away_nick'].astype(str) + '|' + sc.get('season', '').astype(str) + '|' + sc.get('week', '').astype(str)
+        sw_tbl = pd.DataFrame({'key_home_sw': sc_sw_home, 'key_away_sw': sc_sw_away, hsc: sc[hsc], asc: sc[asc]}).drop_duplicates(['key_home_sw', 'key_away_sw'], keep='last')
+        looked = merged.loc[missing, ['key_home_sw', 'key_away_sw']].merge(sw_tbl, on=['key_home_sw', 'key_away_sw'], how='left')[[hsc, asc]]
+        merged.loc[missing, [hsc, asc]] = looked.values
+    merged['_joined_with_scores'] = ~merged[hsc].isna() & ~merged[asc].isna()
+    merged['stake'] = pd.to_numeric(merged.get('stake', 1.0), errors='coerce').fillna(1.0)
+    merged['odds'] = pd.to_numeric(merged.get('odds', -110), errors='coerce').fillna(-110)
+    merged['result'] = 'void'
+    merged['profit'] = 0.0
+    for i, row in merged.iterrows():
+        hs, aw = (row.get(hsc), row.get(asc))
+        try:
+            hs = int(hs) if pd.notna(hs) else None
+            aw = int(aw) if pd.notna(aw) else None
+        except Exception:
+            hs, aw = (None, None)
+        if hs is None or aw is None:
+            continue
+        res = _grade_row(row, hs, aw, row.get('market_norm', ''))
+        merged.at[i, 'result'] = res
+        merged.at[i, 'profit'] = _american_profit(row.get('stake', 1.0), row.get('odds', -110), res)
+    return merged
+st.title('Backtest — Scores Browser')
+st.caption(f'Build tag: {BUILD_TAG}')
+scores, spath = load_scores()
+edges, epath = load_edges()
+st.caption(f'Loaded page file: {Path(__file__).resolve()}')
+st.caption(f'Loaded edges: {epath} · rows={len(edges):,}')
+st.caption(f'Loaded scores: {spath} · rows={len(scores):,}')
+if edges.empty or scores.empty:
+    st.error('Could not load edges or scores from /exports.')
+    st.stop()
+scols = {c.lower(): c for c in scores.columns}
+seasons = sorted({int(x) for x in pd.to_numeric(scores.get(scols.get('season'), pd.Series([], dtype=object)), errors='coerce').dropna().unique().tolist()} | {int(x) for x in pd.to_numeric(edges.get('season', pd.Series([], dtype=object)), errors='coerce').dropna().unique().tolist()})
+season_default = seasons[-1] if seasons else 2024
+c1, c2, c3, c4 = st.columns([1, 1, 2, 2])
+with c1:
+    all_seasons = st.checkbox('All seasons', value=False)
+with c2:
+    all_weeks = st.checkbox('All weeks', value=True)
+with c3:
+    season_pick = season_default if all_seasons or not seasons else st.number_input('Season (±)', min_value=min(seasons), max_value=max(seasons), value=season_default, step=1, format='%d')
+
+def _weeks_for(season_val):
+    if scols.get('season') and scols.get('week'):
+        m = scores[scols['season']].astype(str) == str(season_val)
+        w = pd.to_numeric(scores.loc[m, scols['week']], errors='coerce').dropna().astype(int).unique().tolist()
+        return sorted(set(w))
+    return sorted({int(x) for x in pd.to_numeric(scores.get(scols.get('week'), pd.Series([], dtype=object)), errors='coerce').dropna().astype(int).unique().tolist()} | {int(x) for x in pd.to_numeric(edges.get('week', pd.Series([], dtype=object)), errors='coerce').dropna().astype(int).unique().tolist()})
+weeks_all = _weeks_for(season_pick)
+week_default = weeks_all[0] if weeks_all else 1
+with c4:
+    week_pick = week_default if all_weeks or not weeks_all else st.number_input('Week (±)', min_value=min(weeks_all), max_value=max(weeks_all), value=week_default, step=1, format='%d')
+s_view = scores.copy()
+if not all_seasons and scols.get('season'):
+    s_view = s_view[s_view[scols['season']].astype(str) == str(season_pick)]
+if not all_weeks and scols.get('week'):
+    s_view = s_view[s_view[scols['week']].astype(str) == str(week_pick)]
+hsc = scols.get('home_score') or scols.get('homescore')
+asc = scols.get('away_score') or scols.get('awayscore')
+avg_total = float((pd.to_numeric(s_view[hsc], errors='coerce') + pd.to_numeric(s_view[asc], errors='coerce')).mean()) if len(s_view) else 0.0
+home_win = float((pd.to_numeric(s_view[hsc], errors='coerce') > pd.to_numeric(s_view[asc], errors='coerce')).mean() * 100.0) if len(s_view) else 0.0
+kp = st.columns(4)
+kp[0].metric('Games', len(s_view))
+kp[1].metric('Avg Total Pts', f'{avg_total:.2f}')
+kp[2].metric('Home Win %', f'{home_win:.1f}%')
+kp[3].metric('Pushes', int((pd.to_numeric(s_view[hsc], errors='coerce') == pd.to_numeric(s_view[asc], errors='coerce')).sum()) if len(s_view) else 0)
+st.divider()
+with st.expander('Bet inputs & filters', expanded=True):
+    a, b, c, d = st.columns([1, 1, 2, 1])
+    with a:
+        min_p = st.slider('Min p_win', 0.01, 0.8, 0.45, 0.01)
+    with b:
+        min_odds = st.slider('Min |odds|', 50, 300, 90, 5)
+    with c:
+        markets = st.multiselect('Markets', ['H2H', 'SPREADS', 'TOTALS'], ['H2H', 'SPREADS', 'TOTALS'])
+    with d:
+        one_pick = st.checkbox('Limit to best pick per game/team/market', value=True)
+    force_all = st.checkbox('Force settle ALL loaded edges (ignore filters)', value=False)
+e = edges.copy()
+e['market_norm'] = e.get('market', '').astype(str).map(_norm_market)
+if not force_all:
+    mkt = e['market_norm'].isin(markets)
+    pcol = 'p_win' if 'p_win' in e else None
+    m_p = pd.to_numeric(e[pcol], errors='coerce') >= min_p if pcol else True
+    m_od = pd.to_numeric(e.get('odds', -110), errors='coerce').abs() >= min_odds
+    e = e[mkt & m_od & (m_p if isinstance(m_p, pd.Series) else True)]
+else:
+    st.caption('Force mode: all loaded edges will be settled (filters ignored).')
+if one_pick and len(e):
+    sort_cols = []
+    if '_ev_per_$1' in e:
+        sort_cols.append('_ev_per_$1')
+    if 'p_win' in e:
+        sort_cols.append('p_win')
+    if sort_cols:
+        grp = [c for c in ['season', 'week', '_home_nick', '_away_nick', '_pick_team', 'market_norm'] if c in e]
+        e = e.sort_values(sort_cols, ascending=False).drop_duplicates(grp, keep='first')
+st.caption(f'Loaded edges rows (after filters): {len(e):,}')
+settled = settle_bets(e, scores)
+joined_total = int(settled['_joined_with_scores'].sum()) if '_joined_with_scores' in settled else 0
+joined_date = int((settled.get('_key_home', '').ne('') & settled.get('_key_away', '').ne('') & settled['_joined_with_scores']).sum()) if '_joined_with_scores' in settled and '_key_home' in settled and ('_key_away' in settled) else 0
+st.caption(f'Joined by date: {joined_date:,} · Joined by Season-Week (fallback): {max(joined_total - joined_date, 0):,}')
+wins = int((settled['result'] == 'win').sum()) if 'result' in settled else 0
+losses = int((settled['result'] == 'loss').sum()) if 'result' in settled else 0
+pushes = int((settled['result'] == 'push').sum()) if 'result' in settled else 0
+voids = int((settled['result'] == 'void').sum()) if 'result' in settled else 0
+bets = int(len(settled) - voids)
+hit = wins / bets * 100.0 if bets > 0 else 0.0
+pnl = float(settled['profit'].sum()) if 'profit' in settled else 0.0
+roi = pnl / settled['stake'].sum() * 100.0 if 'stake' in settled and settled['stake'].sum() else 0.0
+if len(e) > 0 and joined_total == 0:
+    st.error('No games joined to scores. Check standardized files (game_id) and nicknames.')
+st.subheader('Settle diagnostics')
+m = st.columns(5)
+m[0].metric('Filtered legs', len(e))
+m[1].metric('Games in slice', len(s_view))
+m[2].metric('Wins / Losses', f'{wins} / {losses}')
+m[3].metric('Hit rate', f'{hit:.1f}%')
+m[4].metric('Profit ($) · ROI', f'{pnl:.2f} · {roi:+.2f}%')
+with st.expander('Settled sample (first 200)', expanded=False):
+    show_cols = [c for c in ['game_id', 'season', 'week', '_date_iso', '_home_nick', '_away_nick', 'market', 'market_norm', 'side', 'line', 'odds', 'stake', 'result', 'profit', '_key_home', '_key_away', '_joined_with_scores'] if c in settled]
+    st.dataframe(settled.head(200)[show_cols], width='stretch')
+with st.expander('Debug / Diagnostics (keys, reasons, counts)', expanded=False):
+    a, b, c = st.columns(3)
+    with a:
+        st.write('**Edge columns present**', list(e.columns))
+    with b:
+        st.write('**Scores columns present**', list(scores.columns))
+    with c:
+        if '_joined_with_scores' in settled:
+            st.write('**Join counts**')
+            st.write(settled['_joined_with_scores'].value_counts(dropna=False).to_frame('count'))
+    if {'_key_home', '_key_away'} <= set(settled.columns):
+        st.write('**Join keys sample (edges date-keys)**')
+        st.dataframe(settled.loc[:, ['_key_home', '_key_away']].dropna().head(10), width='stretch')
+st.download_button('Download settled CSV', data=settled.to_csv(index=False).encode('utf-8-sig'), file_name='edges_settled.csv', mime='text/csv', type='primary')
+st.caption(f'Build tag: {BUILD_TAG}')
+
+
+
+
+
+

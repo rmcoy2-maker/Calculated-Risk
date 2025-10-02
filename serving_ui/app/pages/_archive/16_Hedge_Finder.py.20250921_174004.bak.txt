@@ -1,0 +1,210 @@
+from __future__ import annotations
+# === AppImportGuard (robust) ===
+try:
+    from app.lib.auth import login, show_logout
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    su = None
+    for p in [here] + list(here.parents):
+        if (p / "serving_ui" / "app" / "__init__.py").exists():
+            su = (p / "serving_ui")
+            break
+        if p.name == "serving_ui" and (p / "app" / "__init__.py").exists():
+            su = p
+            break
+        if p.name == "app" and p.parent.name == "serving_ui" and (p / "__init__.py").exists():
+            su = p.parent
+            break
+    if su and (s := str(su)) not in sys.path:
+        sys.path.insert(0, s)
+    from app.lib.auth import login, show_logout  # type: ignore
+# === /AppImportGuard ===
+import streamlit as st
+from app.lib.auth import login, show_logout
+# === Auth (auto-injected) ===
+import streamlit as st  # ensured
+from app.lib.auth import login, show_logout
+
+auth = login(required=False)   # or required=True for protected pages
+if not auth.authenticated:
+    st.info("You are in read-only mode.")
+show_logout()  # sidebar logout
+# === /Auth (auto-injected) ===
+import streamlit as st
+try:
+except Exception:
+    pass
+st.markdown("""
+<style>
+  .block-container { max-width: none !important; padding-left: 1rem; padding-right: 1rem; }
+  [data-testid="stHeader"] { z-index: 9990; }
+</style>
+""", unsafe_allow_html=True)
+# -*- coding: utf-8 -*-
+# --- auto-added: newest-first patch ---
+try:
+    import streamlit as st  # ensure alias available
+except Exception:
+    import streamlit as st
+from app.utils.newest_first_patch import apply_newest_first_patch as __nfp_apply
+__nfp_apply(st)
+# --- end auto-added ---
+
+from pathlib import Path
+import sys, traceback, importlib.util, types
+import pandas as pd
+import streamlit as st
+
+# ---------- Streamlit setup ----------
+st.title("Hedge Finder")
+st.info("Heartbeat âœ“ â€“ page loaded")
+
+# ---------- Locate repo root ----------
+THIS = Path(__file__).resolve()
+ROOT = THIS
+while ROOT and not ((ROOT / "serving").exists() and (ROOT / "serving_ui").exists()):
+    parent = ROOT.parent
+    if parent == ROOT:
+        break
+    ROOT = parent
+
+if ROOT and str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# ---------- Import backend (package first, then direct-file fallback) ----------
+EXPORTS = ROOT / "exports"  # default fallback; will be overwritten if module provides one
+try:
+    from serving.hedge_finder import (
+        load_pool, build_candidates, write_out, append_log, EXPORTS as MODULE_EXPORTS
+    )
+    EXPORTS = MODULE_EXPORTS or EXPORTS  # if module forgot EXPORTS, keep default
+    st.success("Import OK: serving.hedge_finder")
+except Exception as e:
+    st.warning(f"Package import failed: {e}\nTrying direct-file fallback â€¦")
+    hf_path = ROOT / "serving" / "hedge_finder.py"
+    if not hf_path.exists():
+        alt = ROOT / "serving" / "Hedge_Finder.py"  # legacy/cased filename
+        if alt.exists():
+            hf_path = alt
+    if not hf_path.exists():
+        st.error(f"Could not find hedge_finder.py under {ROOT / 'serving'}")
+        st.code("sys.path:\n" + "\n".join(sys.path))
+        st.stop()
+
+    # Create a dummy 'serving' pkg to host the module if needed
+    if "serving" not in sys.modules:
+        pkg = types.ModuleType("serving")
+        pkg.__path__ = [str(ROOT / "serving")]
+        sys.modules["serving"] = pkg
+
+    spec = importlib.util.spec_from_file_location("serving.hedge_finder", str(hf_path))
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+
+    load_pool        = mod.load_pool
+    build_candidates = mod.build_candidates
+    write_out        = mod.write_out
+    append_log       = mod.append_log
+    EXPORTS          = getattr(mod, "EXPORTS", EXPORTS)
+    st.success(f"Loaded backend via fallback: {hf_path}")
+
+EXPORTS = Path(EXPORTS)
+EXPORTS.mkdir(parents=True, exist_ok=True)
+
+CANDS = EXPORTS / "hedge_candidates.csv"
+LOG   = EXPORTS / "bets_log.csv"
+
+# ---------- Sidebar ----------
+with st.sidebar:
+    st.subheader("Filters")
+    min_p  = st.slider("Min win probability", 0.40, 0.80, 0.55, 0.01)
+    min_ev = st.number_input("Min EV (if present)", value=0.00, step=0.05, format="%.2f")
+    allowed = st.multiselect("Allowed markets", ["ML","ATS","PROP"], default=["ML","ATS","PROP"])
+    low  = st.number_input("Min odds (+)", value=375, min_value=200, max_value=10000, step=25)
+    high = st.number_input("Max odds (+)", value=550, min_value=low, max_value=10000, step=25)
+    legs = st.multiselect("Legs", [3,4,5], default=[3,4,5])
+    topn = st.number_input("Top N", value=5, min_value=1, max_value=20, step=1)
+
+c1, c2 = st.columns([1, 1])
+run = c1.button("Build candidates")
+log_all = c2.button("Log to Calculated History")
+
+st.divider()
+
+# ---------- Actions ----------
+if run:
+    try:
+        pool = load_pool(min_p=min_p, min_ev=min_ev, allowed=tuple(allowed))
+        if pool.empty:
+            st.warning("No rows passed filters. Widen probability/EV or check newest exports.")
+        else:
+            cands = build_candidates(
+                pool,
+                target_low=int(low),
+                target_high=int(high),
+                legs_options=tuple(sorted(set(legs))),
+                top_n=int(topn),
+            )
+            write_out(cands)
+            st.success(f"Wrote {len(cands)} candidates â†’ {CANDS.name}")
+    except Exception as e:
+        st.error("Error while building candidates:")
+        st.exception(e)
+
+# ---------- Table ----------
+if CANDS.exists():
+    try:
+        df = pd.read_csv(CANDS)
+        st.subheader("Candidates")
+        if df.empty:
+            st.info("No candidates for these filters.")
+        else:
+            show = [c for c in ["legs","american","p_combo","ev_est","legs_json"] if c in df.columns]
+            st.dataframe(df[show] if show else df, use_container_width=True)
+    except Exception as e:
+        st.error(f"Failed to read {CANDS.name}:")
+        st.exception(e)
+else:
+    st.info("No hedge_candidates.csv yet. Click â€œBuild candidatesâ€.")
+
+# ---------- Log ----------
+if log_all:
+    try:
+        if CANDS.exists():
+            df = pd.read_csv(CANDS)
+            if not df.empty:
+                append_log(df.to_dict("records"), stake=5.0, tag="hedge_ui")
+                st.success(f"Logged {len(df)} parlays â†’ {LOG.name}")
+            else:
+                st.warning("Nothing to log â€” no candidates found.")
+        else:
+            st.warning("Build candidates first.")
+    except Exception as e:
+        st.error("Failed to append to bets_log:")
+        st.exception(e)
+
+# ---------- Diagnostics ----------
+with st.expander("âš™ï¸ Diagnostics"):
+    st.write("THIS:", THIS)
+    st.write("ROOT:", ROOT)
+    st.write("EXPORTS:", EXPORTS)
+    st.write("CANDS exists?", CANDS.exists(), "size:", CANDS.stat().st_size if CANDS.exists() else 0)
+    if CANDS.exists():
+        try:
+            st.dataframe(pd.read_csv(CANDS, nrows=10), use_container_width=True)
+        except Exception as e:
+            st.write("Preview error:", e)
+
+
+
+
+
+
+
+
+
+
+
