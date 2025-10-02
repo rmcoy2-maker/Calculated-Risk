@@ -1,65 +1,162 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Features — Calculated Risk</title>
-  <meta name="description" content="Calculated Risk — sports analytics. We are not a sportsbook." />
-  <link rel="icon" href="/assets/logo.png" />
-  <style>
-    :root { --bg:#0b1520; --card:#111b29; --muted:#98a2b3; --text:#e6edf6; --brand:#2ecc71; --border:#22324a; }
-    *{box-sizing:border-box} body{margin:0;background:radial-gradient(1000px 600px at 15% 0%, #0f2536 0%, var(--bg) 45%) fixed;color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial}
-    a{color:inherit;text-decoration:none}
-    .wrap{max-width:1200px;margin:0 auto;padding:28px 20px}
-    .topbar{display:flex;align-items:center;gap:14px}
-    .nav{margin-left:auto;display:flex;gap:22px}
-    .banner{background:#0f1f33;color:#cfe0ff;padding:8px 14px;text-align:center;font-size:14px;border-bottom:1px solid #1e2f4a}
-    .biglogo{display:flex;align-items:center;gap:14px}
-    .biglogo img{height:82px;width:auto;border-radius:12px;box-shadow:0 0 0 1px #1f3b2a}
-    .footer{margin:60px 0 24px;color:#8fa3bd;font-size:14px;text-align:center}
-    .prose p{color:#c7d3e1}
-    .btn{background:#1f6f3f;color:#fff;padding:10px 16px;border-radius:10px;border:1px solid #194d31;cursor:pointer;font-weight:600}
-    .btn.sec{background:transparent;border-color:#2a3b55;color:#dbe7f7}
-    .small{font-size:13px;color:#98a2b3}
-    .grid{display:grid;gap:16px}
-    .grid.g3{grid-template-columns:repeat(3,1fr)}
-    .card{background:#0b1321;border:1px solid var(--border);border-radius:16px;padding:18px}
-    @media (max-width:980px){ .grid.g3{grid-template-columns:1fr} }
-  </style>
+<!DOCTYPE html><html lang='en'><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Features • Calculated Risk</title>
+  <meta name="description" content="Calculated Risk — analytics for informational and entertainment purposes. Not a sportsbook.">
+  <meta property="og:title" content="Features • Calculated Risk">
+  <meta property="og:description" content="AI-powered sports analytics — Moneyball for fans and sharps.">
+  <meta property="og:image" content="assets/og-image.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/styles.css">
+  <style>.container{max-width:1100px}</style>
 </head>
-<body>
-  <div class="banner">Calculated Risk provides sports <strong>analytics</strong> for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</div>
-  <header class="wrap topbar">
-    <a class="biglogo" href="/assets/qr_calculatedrisk.png" target="_blank" rel="noopener">
-      <img src="/assets/logo.png" alt="Calculated Risk — open QR" />
-      <strong>Calculated Risk</strong>
-    </a>
-    <nav class="nav">
-      <a href="index.html">Home</a>
-      <a href="features.html">Features</a>
-      <a href="pricing.html">Compare Plans</a>
-      <a href="simulations.html">Simulations</a>
-      <a href="beta.html">Join Beta</a>
-      <a href="privacy.html">Privacy</a>
-      <a href="terms.html">Terms</a>
-    </nav>
-  </header>
+<body class='antialiased text-gray-900 bg-white'>
+<header class="brand-bg text-white">
+  <nav class="container mx-auto px-6">
+    <ul class="flex flex-wrap gap-6 items-center py-4">
+      <li><a href="index.html" class="hover:text-[var(--brand-green)]">Home</a></li>
+      <li><a href="login.html" class="hover:text-[var(--brand-green)]">Login</a></li>
+      <li><a href="features.html" class="hover:text-[var(--brand-green)]">Features</a></li>
+      <li><a href="pricing.html" class="hover:text-[var(--brand-green)]">Pricing</a></li>
+      <li><a href="product-shots.html" class="hover:text-[var(--brand-green)]">Product Shots</a></li>
+      <li><a href="privacy_terms_services.html" class="hover:text-[var(--brand-green)]">Privacy & T&S</a></li>
+      <li><a href="about.html" class="hover:text-[var(--brand-green)]">About</a></li>
+      <li><a href="investors.html" class="hover:text-[var(--brand-green)]">Investors</a></li>
+      <li><a href="beta.html" class="hover:text-[var(--brand-green)]">Beta</a></li>
+      <li><a href="join.html" class="hover:text-[var(--brand-green)]">Join</a></li>
+    </ul>
+  </nav>
+</header>
 
-  <main class="wrap">
-    
-  <h1>Features</h1>
-  <div class="grid g3" style="margin-top:18px">
-    <div class="card"><h3>Line Shop</h3><p class="small">Compare prices across books and auto-highlight the best lines.</p></div>
-    <div class="card"><h3>EV Comparisons</h3><p class="small">Estimate expected value and calibrate selections with live/archived data.</p></div>
-    <div class="card"><h3>Ghost Combo</h3><p class="small">Shadow your ideal combo and compare to live market offerings.</p></div>
-    <div class="card"><h3>Consistency Index</h3><p class="small">Stack wins/ATS covers to gauge reliability.</p></div>
-    <div class="card"><h3>Fair-Value Line</h3><p class="small">Model vs market with CLV tracking.</p></div>
-    <div class="card"><h3>Portfolio / Bankroll</h3><p class="small">Track exposure and results over time.</p></div>
+<main class="container mx-auto px-6 py-12 space-y-10">
+  <h1 class="text-3xl font-bold">Features</h1>
+
+  <!-- Existing image 1 -->
+  <section class="space-y-2">
+    <h2 class="text-xl font-semibold">1) Features: US vs THEM</h2>
+    <img src="assets/image01.png" class="w-full rounded-xl shadow" alt="US vs THEM" onerror="this.style.display='none'">
+  </section>
+
+  <!-- Existing image 2 -->
+  <section class="space-y-2">
+    <h2 class="text-xl font-semibold">2) THEM at Price Points</h2>
+    <img src="assets/image02.png" class="w-full rounded-xl shadow" alt="THEM by Price" onerror="this.style.display='none'">
+  </section>
+
+  <!-- New image: Anonymous comparison (use assets/image03.png) -->
+  <section class="space-y-2">
+    <h2 class="text-xl font-semibold">3) Feature Coverage by Tier — Anonymous Competitors vs Us (Image)</h2>
+    <img src="assets/image03.png" class="w-full rounded-xl shadow" alt="Feature comparison (anonymous competitors)" onerror="this.style.display='none'">
+    <p class="text-xs text-gray-500">Anonymous competitor ranges summarize public consumer tiers; scope varies by brand (fantasy, betting, enterprise).</p>
+  </section>
+
+  <!-- New image: Detailed comparison (use assets/image04.png) -->
+  <section class="space-y-2">
+    <h2 class="text-xl font-semibold">4) Feature Coverage by Tier — Named Examples vs Us (Image)</h2>
+    <img src="assets/image04.png" class="w-full rounded-xl shadow" alt="Feature comparison (named examples)" onerror="this.style.display='none'">
+    <p class="text-xs text-gray-500">Examples per tier (illustrative, not exhaustive): Rookie — Action Network+, PFF+; Pro — BetQL Pro, FantasyLabs, Outlier Pro; HOF — Sports Insights Pro / enterprise bundles.</p>
+  </section>
+
+  <!-- HTML TABLE: Anonymous competitors -->
+  <section class="space-y-4">
+    <h2 class="text-xl font-semibold">5) Feature Coverage by Tier — Anonymous Competitors vs Us (Table)</h2>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm border border-gray-200 rounded-2xl overflow-hidden">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left">Features</th>
+            <th class="px-4 py-3 text-center">
+              Them (Rookie)
+              <div class="text-xs text-gray-600">$20–30/mo • $80–300/yr</div>
+            </th>
+            <th class="px-4 py-3 text-center">
+              Them (Pro)
+              <div class="text-xs text-gray-600">$50–80/mo • $500–800/yr</div>
+            </th>
+            <th class="px-4 py-3 text-center">
+              Them (HOF)
+              <div class="text-xs text-gray-600">$100–250+/mo • $1k–3k+/yr</div>
+            </th>
+            <th class="px-4 py-3 text-center">
+              Us (Rookie)
+              <div class="text-xs text-gray-600">$20/mo • $205/yr</div>
+            </th>
+            <th class="px-4 py-3 text-center">
+              Us (Pro)
+              <div class="text-xs text-gray-600">$55/mo • $550/yr</div>
+            </th>
+            <th class="px-4 py-3 text-center">
+              Us (HOF)
+              <div class="text-xs text-gray-600">$80/mo • $800/yr</div>
+            </th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+          <tr>
+            <td class="px-4 py-2">Live Odds & Line Movement</td>
+            <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Historical Backtesting</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Player Prop Tools</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Model Builder / What-If</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Sharps / Public % Signals</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Export (CSV/API)</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Fantasy-Focused (DFS/Lineups/Rankings)</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td>
+            <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Weekly Simulations</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2">Matchup/Trends Deep-Dive</td>
+            <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+            <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- HTML TABLE: Named examples -->
+  <section class="space-y-2">
+    <h2 class="text-xl font-semibold">6) Feature Coverage by Tier — Named Examples vs Us (Table)</h2>
+    <!-- You can reuse the exact table above. If you want, add this small note: -->
+    <p class="text-xs text-gray-500">
+      Examples per tier (illustrative, not exhaustive): Rookie — Action Network+, PFF+; Pro — BetQL Pro, FantasyLabs, Outlier Pro; HOF — Sports Insights Pro / enterprise bundles.
+    </p>
+  </section>
+</main>
+
+<footer class="bg-gray-50 border-t mt-16">
+  <div class="container mx-auto px-6 py-10 text-sm text-gray-600 space-y-2">
+    <p>Calculated Risk provides analytics for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</p>
+    <p>&copy; 2025 Calculated Risk •
+      <a class="link-accent" href="privacy_terms_services.html">Privacy & Terms</a> •
+      <a class="link-accent" href="mailto:cs@calculatedrisk.group">cs@calculatedrisk.group</a></p>
   </div>
-
-  </main>
-
-  <div class="wrap footer">© <span id="y"></span> Calculated Risk • Play responsibly</div>
-  <script>document.getElementById('y').textContent = new Date().getFullYear()</script>
-</body>
-</html>
+</footer>
+</body></html>

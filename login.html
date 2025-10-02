@@ -1,8 +1,8 @@
 <!DOCTYPE html><html lang='en'><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Home • Calculated Risk</title>
+  <title>Login • Calculated Risk</title>
   <meta name="description" content="Calculated Risk — analytics for informational and entertainment purposes. Not a sportsbook.">
-  <meta property="og:title" content="Home • Calculated Risk">
+  <meta property="og:title" content="Login • Calculated Risk">
   <meta property="og:description" content="AI-powered sports analytics — Moneyball for fans and sharps.">
   <meta property="og:image" content="assets/og-image.png">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -24,26 +24,19 @@
     </ul>
   </nav>
 </header>
-<section class="hero-gradient text-white">
-  <div class="container mx-auto px-6 py-16 md:py-24">
-    <div class="max-w-3xl space-y-6">
-      <img src="assets/logo.png" alt="Calculated Risk logo" class="h-16 md:h-20 object-contain" onerror="this.style.display='none'">
-      <h1 class="text-4xl md:text-5xl font-bold">Calculated Risk</h1>
-      <p class="text-lg opacity-90">“I didn’t just beat the odds — I rearranged them.”</p>
-      <p class="text-sm opacity-80">We are <span class="underline">not</span> a sportsbook.</p>
-      <div class="flex flex-wrap gap-3 pt-3">
-        <a href="login.html" class="px-5 py-3 brand-accent-bg hover:brightness-110 rounded-lg font-semibold">Log In</a>
-        <a href="pricing.html" class="px-5 py-3 bg-white/10 hover:bg-white/20 rounded-lg font-semibold">Pricing</a>
-        <a href="features.html" class="px-5 py-3 bg-white/10 hover:bg-white/20 rounded-lg font-semibold">Features</a>
-      </div>
-    </div>
+<main class="flex items-center justify-center min-h-[70vh]">
+  <div class="bg-white card p-8 w-full max-w-md space-y-6">
+    <h1 class="text-2xl font-bold text-center">Login to Calculated Risk</h1>
+    <form action="https://YOUR-EDGE-FINDER-APP-LOGIN-URL" method="POST" class="space-y-4">
+      <div><label class="block text-sm font-medium text-gray-700">Email</label>
+        <input type="email" name="email" required class="mt-1 w-full border rounded-lg p-3 focus:ring-[var(--brand-green)] focus:border-[var(--brand-green)]"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Password</label>
+        <input type="password" name="password" required class="mt-1 w-full border rounded-lg p-3 focus:ring-[var(--brand-green)] focus:border-[var(--brand-green)]"></div>
+      <button type="submit" class="w-full px-5 py-3 brand-accent-bg hover:brightness-110 text-white rounded-lg font-semibold">Log In</button>
+    </form>
+    <p class="text-center text-sm text-gray-600">Or <a class="link-accent" href="https://YOUR-EDGE-FINDER-APP-LOGIN-URL">continue to Edge Finder login</a></p>
   </div>
-</section>
-<section class="container mx-auto px-6 py-14 grid md:grid-cols-3 gap-8">
-  <div class="p-6 card bg-white"><h3 class="font-semibold text-lg mb-2">Depth of Insight</h3><p>Unique views for value, matchups, consistency, and more.</p></div>
-  <div class="p-6 card bg-white"><h3 class="font-semibold text-lg mb-2">Priced to Win</h3><p>Rookie ($20), Pro ($55), HOF ($80).</p></div>
-  <div class="p-6 card bg-white"><h3 class="font-semibold text-lg mb-2">Try for a Day</h3><p>24 hours for $5 (once per year, Dec 1–Super Bowl Sunday). <a class="link-accent" href="privacy_terms_services.html#try">Details</a>.</p></div>
-</section>
+</main>
 <footer class="bg-gray-50 border-t mt-16">
   <div class="container mx-auto px-6 py-10 text-sm text-gray-600 space-y-2">
     <p>Calculated Risk provides analytics for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</p>

@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://calculatedrisk.group/</loc></url>
-  <url><loc>https://calculatedrisk.group/beta</loc></url>
-  <url><loc>https://calculatedrisk.group/pricing</loc></url>
-  <url><loc>https://calculatedrisk.group/privacy</loc></url>
-  <url><loc>https://calculatedrisk.group/terms</loc></url>
-  <url><loc>https://calculatedrisk.group/thank-you</loc></url>
+  <url><loc>https://calculatedrisk.group/login.html</loc></url>
+  <url><loc>https://calculatedrisk.group/features.html</loc></url>
+  <url><loc>https://calculatedrisk.group/pricing.html</loc></url>
+  <url><loc>https://calculatedrisk.group/product-shots.html</loc></url>
+  <url><loc>https://calculatedrisk.group/privacy_terms_services.html</loc></url>
+  <url><loc>https://calculatedrisk.group/about.html</loc></url>
+  <url><loc>https://calculatedrisk.group/investors.html</loc></url>
+  <url><loc>https://calculatedrisk.group/beta.html</loc></url>
+  <url><loc>https://calculatedrisk.group/join.html</loc></url>
 </urlset>

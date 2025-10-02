@@ -1,0 +1,63 @@
+<!DOCTYPE html><html lang='en'><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Product Shots • Calculated Risk</title>
+  <meta name="description" content="Calculated Risk — analytics for informational and entertainment purposes. Not a sportsbook.">
+  <meta property="og:title" content="Product Shots • Calculated Risk">
+  <meta property="og:description" content="AI-powered sports analytics — Moneyball for fans and sharps.">
+  <meta property="og:image" content="assets/og-image.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/styles.css">
+  <style>.container{max-width:1100px}</style>
+</head><body class='antialiased text-gray-900 bg-white'><header class="brand-bg text-white">
+  <nav class="container mx-auto px-6">
+    <ul class="flex flex-wrap gap-6 items-center py-4">
+      <li><a href="index.html" class="hover:text-[var(--brand-green)]">Home</a></li>
+      <li><a href="login.html" class="hover:text-[var(--brand-green)]">Login</a></li>
+      <li><a href="features.html" class="hover:text-[var(--brand-green)]">Features</a></li>
+      <li><a href="pricing.html" class="hover:text-[var(--brand-green)]">Pricing</a></li>
+      <li><a href="product-shots.html" class="hover:text-[var(--brand-green)]">Product Shots</a></li>
+      <li><a href="privacy_terms_services.html" class="hover:text-[var(--brand-green)]">Privacy & T&S</a></li>
+      <li><a href="about.html" class="hover:text-[var(--brand-green)]">About</a></li>
+      <li><a href="investors.html" class="hover:text-[var(--brand-green)]">Investors</a></li>
+      <li><a href="beta.html" class="hover:text-[var(--brand-green)]">Beta</a></li>
+      <li><a href="join.html" class="hover:text-[var(--brand-green)]">Join</a></li>
+    </ul>
+  </nav>
+</header>
+<main class="container mx-auto px-6 py-12">
+  <h1 class="text-3xl font-bold mb-4">Product Shots</h1>
+  <p class="text-gray-600 mb-6">Place screenshots in <code>/assets/product-shots/</code> named <code>product-01.png</code> … <code>product-48.png</code>. JPG/PNG/WebP/SVG supported. Missing files auto-hide.</p>
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+    <input id="filter" placeholder="Filter by filename…" class="w-full md:w-80 border rounded-lg p-3" />
+    <div class="text-sm text-gray-600">Showing <span id="count">0</span> images</div>
+  </div>
+  <div id="gallery" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6"></div>
+</main>
+<div id="lightbox" class="fixed inset-0 bg-black/80 hidden items-center justify-center z-50">
+  <img id="lightimg" class="max-h-[90vh] max-w-[90vw] rounded-xl shadow" alt="Preview">
+</div>
+<script>
+  const gallery=document.getElementById('gallery'),countEl=document.getElementById('count'),filterEl=document.getElementById('filter');
+  const lightbox=document.getElementById('lightbox'), lightimg=document.getElementById('lightimg');
+  const bases=Array.from({length:48},(_,i)=>String(i+1).padStart(2,'0')); const exts=['png','jpg','jpeg','webp','svg'];
+  const files=[]; for(const b of bases){ for(const e of exts){ files.push(`assets/product-shots/product-${b}.${e}`) } }
+  function makeCard(src){ const card=document.createElement('div'); card.className='card bg-white overflow-hidden';
+    const img=document.createElement('img'); img.loading='lazy'; img.alt=src.split('/').pop(); img.src=src; img.className='w-full h-auto block';
+    img.onerror=()=>card.remove(); img.onclick=()=>{ lightimg.src=src; lightbox.classList.remove('hidden'); lightbox.classList.add('flex'); document.body.classList.add('lightbox-open'); };
+    const cap=document.createElement('div'); cap.className='px-3 py-2 text-xs text-gray-600 border-t'; cap.textContent=img.alt;
+    card.appendChild(img); card.appendChild(cap); return card; }
+  function render(filter=''){ gallery.innerHTML=''; const q=filter.trim().toLowerCase(); let shown=0;
+    for(const f of files){ if(q && !f.toLowerCase().includes(q)) continue; const c=makeCard(f); gallery.appendChild(c); shown++; }
+    countEl.textContent=shown; }
+  filterEl.addEventListener('input',()=>render(filterEl.value));
+  lightbox.addEventListener('click',()=>{ lightbox.classList.add('hidden'); lightbox.classList.remove('flex'); document.body.classList.remove('lightbox-open'); lightimg.src=''; });
+  render();
+</script>
+<footer class="bg-gray-50 border-t mt-16">
+  <div class="container mx-auto px-6 py-10 text-sm text-gray-600 space-y-2">
+    <p>Calculated Risk provides analytics for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</p>
+    <p>&copy; 2025 Calculated Risk •
+      <a class="link-accent" href="privacy_terms_services.html">Privacy & Terms</a> •
+      <a class="link-accent" href="mailto:cs@calculatedrisk.group">cs@calculatedrisk.group</a></p>
+  </div>
+</footer></body></html>
