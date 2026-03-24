@@ -1,2 +1,0 @@
-def check_correlation(*args, **kwargs):
-    return None

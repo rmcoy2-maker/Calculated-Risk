@@ -1,8 +1,0 @@
-# Global model registry settings
-# Bump this when you promote a new model so new bets are tagged automatically.
-MODEL_VERSION = "v1"   # e.g., "v2", "2025w03", etc.
-
-
-
-
-

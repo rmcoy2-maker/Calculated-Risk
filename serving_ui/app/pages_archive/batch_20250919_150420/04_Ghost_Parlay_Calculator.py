@@ -1,4 +1,0 @@
-import streamlit as st
-from serving_ui.app._layout import header
-header('Ghost Parlay Calculator')
-st.info('This page was restored as a placehnewer. Paste your new logic here when ready.')
