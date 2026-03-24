@@ -1,0 +1,37 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Try for a Day — Activated</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/styles.css">
+  <style>.container{max-width:1100px}</style>
+</head>
+<body class="antialiased text-gray-900 bg-white">
+<header class="brand-bg text-white">
+  <nav class="container mx-auto px-6"><ul class="flex gap-6 py-4">
+    <li><a href="index.html" class="hover:text-[var(--brand-green)]">Home</a></li>
+    <li><a href="features.html" class="hover:text-[var(--brand-green)]">Features</a></li>
+    <li><a href="pricing.html" class="hover:text-[var(--brand-green)]">Pricing</a></li>
+  </ul></nav>
+</header>
+<main class="container mx-auto px-6 py-20 text-center space-y-4">
+  <div class="mx-auto max-w-xl">
+    <div class="text-5xl">✅</div>
+    <h1 class="text-3xl font-bold">Your 24‑hour pass is active</h1>
+    <p class="text-gray-700">We’ve activated full access for the next 24 hours on <span id="email" class="font-medium"></span>.</p>
+    <p class="text-gray-600 text-sm">Use your access now — insights are time‑sensitive during the playoff window.</p>
+    <div class="pt-4 flex justify-center gap-3">
+      <a href="login.html" class="px-5 py-3 brand-accent-bg hover:brightness-110 rounded-lg text-white font-semibold">Go to Login</a>
+      <a href="features.html" class="px-5 py-3 border rounded-lg font-semibold">Explore Features</a>
+    </div>
+    <p class="text-xs text-gray-500 mt-6">Pass is once per calendar year and non‑refundable. <a class="link-accent" href="privacy_terms_services.html#try">T&Cs</a>.</p>
+  </div>
+</main>
+<footer class="bg-gray-50 border-t mt-16">
+  <div class="container mx-auto px-6 py-10 text-sm text-gray-600">© 2025 Calculated Risk</div>
+</footer>
+<script>
+  const e = localStorage.getItem('tryPassEmail') || '';
+  if(e) document.getElementById('email').textContent = e;
+</script>
+</body></html>

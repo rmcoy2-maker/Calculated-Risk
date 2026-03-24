@@ -1,0 +1,13 @@
+:root{
+  --brand-navy:#0a2540;
+  --brand-green:#10b981;
+  --brand-white:#ffffff;
+}
+.brand-bg{background-color:var(--brand-navy)}
+.brand-text{color:var(--brand-navy)}
+.brand-accent{color:var(--brand-green)}
+.brand-accent-bg{background-color:var(--brand-green)}
+.hero-gradient{background:linear-gradient(180deg,#0a2540 0%,#0f172a 100%)}
+.card{border-radius:16px;box-shadow:0 8px 24px rgba(2,6,23,.08)}
+.link-accent{color:var(--brand-green);text-decoration:underline}
+.lightbox-open{overflow:hidden}
