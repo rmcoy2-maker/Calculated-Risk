@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang='en'><head>
+<!DOCTYPE html><html lang='en'><head> 
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pricing • Calculated Risk</title>
   <meta name="description" content="Calculated Risk — analytics for informational and entertainment purposes. Not a sportsbook.">
@@ -26,7 +26,7 @@
 </header>
 <main class="container mx-auto px-6 py-12">
   <h1 class="text-3xl font-bold mb-2">Pricing</h1>
-  <p class="text-sm text-gray-600 mb-6">Pay annually and save <span class="font-semibold">up to 17%</span>.</p>
+  <p class="text-sm text-gray-600 mb-6">Pay annually and save <span class="font-semibold">about 17%</span>.</p>
 
   <div class="grid md:grid-cols-3 gap-6">
     <!-- Rookie -->
@@ -34,8 +34,8 @@
       <h2 class="text-xl font-semibold">Rookie</h2>
       <p class="text-3xl font-bold mt-2">$20<span class="text-base font-normal">/mo</span></p>
       <p class="text-sm text-gray-700 mt-1">
-        or <span class="font-semibold">$205/year</span>
-        <span class="ml-2 inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 align-middle">save $35</span>
+        or <span class="font-semibold">$200/year</span>
+        <span class="ml-2 inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 align-middle">save $40</span>
       </p>
       <ul class="mt-4 list-disc pl-5 space-y-2 text-sm">
         <li>Core insights & dashboards</li><li>Weekly simulations</li><li>Community insights</li>
@@ -45,10 +45,10 @@
     <!-- Pro -->
     <div class="p-6 card bg-white ring-2 ring-[var(--brand-green)]">
       <h2 class="text-xl font-semibold">Pro</h2>
-      <p class="text-3xl font-bold mt-2">$55<span class="text-base font-normal">/mo</span></p>
+      <p class="text-3xl font-bold mt-2">$30<span class="text-base font-normal">/mo</span></p>
       <p class="text-sm text-gray-700 mt-1">
-        or <span class="font-semibold">$550/year</span>
-        <span class="ml-2 inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 align-middle">save $110 (~17%)</span>
+        or <span class="font-semibold">$300/year</span>
+        <span class="ml-2 inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 align-middle">save $60</span>
       </p>
       <ul class="mt-4 list-disc pl-5 space-y-2 text-sm">
         <li>All Rookie features</li><li>Advanced analytics + trends</li><li>Deeper matchup tools</li>
@@ -58,10 +58,10 @@
     <!-- HOF -->
     <div class="p-6 card bg-white">
       <h2 class="text-xl font-semibold">HOF</h2>
-      <p class="text-3xl font-bold mt-2">$80<span class="text-base font-normal">/mo</span></p>
+      <p class="text-3xl font-bold mt-2">$40<span class="text-base font-normal">/mo</span></p>
       <p class="text-sm text-gray-700 mt-1">
-        or <span class="font-semibold">$800/year</span>
-        <span class="ml-2 inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 align-middle">save $160 (~17%)</span>
+        or <span class="font-semibold">$400/year</span>
+        <span class="ml-2 inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 align-middle">save $80</span>
       </p>
       <ul class="mt-4 list-disc pl-5 space-y-2 text-sm">
         <li>All Pro features</li><li>Historical backtesting</li><li>Power-user exports</li>
@@ -180,7 +180,6 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      // TODO: Replace with real payment + API call
       localStorage.setItem('tryPassEmail', form.email.value);
       window.location.href = 'try-pass-success.html';
     });
