@@ -1,144 +1,525 @@
-<!doctype html><html lang="en"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Calculated Risk — Plans & Features</title>
-<meta property="og:title" content="Calculated Risk — Plans & Features"/>
-<meta property="og:description" content="Compare Basic, Pro, and Elite."/>
-<link rel="icon" href="assets/logo.png"/>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>.glass{backdrop-filter:blur(10px);background:rgba(15,23,42,.55)}</style>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Features • Calculated Risk</title>
+  <meta name="description" content="Calculated Risk turns live lines, model outputs, bankroll context, and backtesting into a practical edge-finding workflow.">
+  <meta property="og:title" content="Features • Calculated Risk">
+  <meta property="og:description" content="AI-powered sports analytics — live edges, bankroll-aware guidance, backtesting, prop tools, and sharper workflow control.">
+  <meta property="og:image" content="assets/og-image.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/styles.css">
+  <style>
+    .container { max-width: 1160px; }
+  </style>
 </head>
-<body class="bg-slate-950 text-slate-100 antialiased">
-  <!-- Header -->
-  <header class="sticky top-0 z-50 bg-slate-950/80 backdrop-blur border-b border-slate-900">
-    <div class="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
-      <a href="index.html" class="flex items-center gap-3">
-        <img src="assets/logo.png" alt="Calculated Risk" class="h-9 w-9 rounded-xl ring-1 ring-white/10 bg-white/95 p-1">
-        <span class="font-semibold tracking-wide">Calculated Risk</span>
-      </a>
-      <nav class="hidden md:flex items-center gap-6 text-sm">
-        <a href="index.html#features" class="hover:text-white/90 text-slate-300">Features</a>
-        <a href="features.html" class="hover:text-white/90 text-slate-300">Compare Plans</a>
-      </nav>
-    </div>
+
+<body class="antialiased text-gray-900 bg-white">
+  <header class="brand-bg text-white">
+    <nav class="container mx-auto px-6">
+      <ul class="flex flex-wrap gap-6 items-center py-4">
+        <li><a href="index.html" class="hover:text-[var(--brand-green)]">Home</a></li>
+        <li><a href="login.html" class="hover:text-[var(--brand-green)]">Login</a></li>
+        <li><a href="features.html" class="hover:text-[var(--brand-green)]">Features</a></li>
+        <li><a href="pricing.html" class="hover:text-[var(--brand-green)]">Pricing</a></li>
+        <li><a href="product-shots.html" class="hover:text-[var(--brand-green)]">Product Shots</a></li>
+        <li><a href="privacy_terms_services.html" class="hover:text-[var(--brand-green)]">Privacy &amp; T&amp;S</a></li>
+        <li><a href="about.html" class="hover:text-[var(--brand-green)]">About</a></li>
+        <li><a href="investors.html" class="hover:text-[var(--brand-green)]">Investors</a></li>
+        <li><a href="beta.html" class="hover:text-[var(--brand-green)]">Beta</a></li>
+        <li><a href="join.html" class="hover:text-[var(--brand-green)]">Join</a></li>
+      </ul>
+    </nav>
   </header>
 
-  <!-- Title -->
-  <section class="mx-auto max-w-7xl px-6 pt-10 pb-6">
-    <h1 class="text-3xl md:text-4xl font-bold">Plans & Features</h1>
-    <p class="mt-3 text-slate-300 max-w-2xl">Everything in one place: line shopping, EV tools, and Ghost Parlay.</p>
-  </section>
+  <main>
+    <!-- HERO -->
+    <section class="container mx-auto px-6 pt-12 pb-10">
+      <div class="grid lg:grid-cols-2 gap-10 items-center">
+        <div class="space-y-6">
+          <span class="inline-flex items-center rounded-full bg-green-50 text-green-700 border border-green-200 px-3 py-1 text-sm font-medium">
+            Calculated Risk Feature Stack
+          </span>
+          <h1 class="text-4xl md:text-5xl font-bold leading-tight">
+            A sharper workflow for finding edges, managing risk, and making better betting decisions.
+          </h1>
+          <p class="text-lg text-gray-600">
+            Calculated Risk combines live odds context, model outputs, bankroll-aware guidance, backtesting, prop tools,
+            parlay workflow, and decision support into one operating system for sports analytics.
+          </p>
+          <div class="flex flex-wrap gap-4">
+            <a href="login.html" class="px-6 py-3 rounded-lg text-white font-semibold brand-accent-bg hover:brightness-110">
+              Launch App
+            </a>
+            <a href="pricing.html" class="px-6 py-3 rounded-lg border border-gray-300 font-semibold hover:bg-gray-50">
+              View Pricing
+            </a>
+          </div>
+          <div class="grid sm:grid-cols-3 gap-4 pt-2">
+            <div class="rounded-2xl border border-gray-200 p-4">
+              <div class="text-2xl font-bold">Live</div>
+              <div class="text-sm text-gray-600">odds, daily edge board, and current pricing context</div>
+            </div>
+            <div class="rounded-2xl border border-gray-200 p-4">
+              <div class="text-2xl font-bold">Built</div>
+              <div class="text-sm text-gray-600">for bankroll discipline, simulation, and workflow clarity</div>
+            </div>
+            <div class="rounded-2xl border border-gray-200 p-4">
+              <div class="text-2xl font-bold">Tiered</div>
+              <div class="text-sm text-gray-600">from Rookie to HOF based on depth and power-user needs</div>
+            </div>
+          </div>
+        </div>
 
-  <!-- Pricing + Features (editable HTML table) -->
-  <section class="mx-auto max-w-7xl px-6 pb-16">
-    <div class="overflow-x-auto rounded-3xl ring-1 ring-white/10 glass">
-      <table class="min-w-full text-sm">
-        <thead class="bg-slate-900/70">
-          <tr>
-            <th class="px-4 py-4 text-left text-slate-200">Feature</th>
-            <th class="px-4 py-4 text-left">
-              <div class="font-semibold">Basic</div>
-              <div class="text-slate-300">$20/mo</div>
-            </th>
-            <th class="px-4 py-4 text-left">
-              <div class="font-semibold">Pro</div>
-              <div class="text-slate-300">$55/mo • $550/yr <span class="text-xs">(≈17% off)</span></div>
-            </th>
-            <th class="px-4 py-4 text-left">
-              <div class="font-semibold">Elite</div>
-              <div class="text-slate-300">$80/mo • $800/yr <span class="text-xs">(≈17% off)</span></div>
-            </th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800">
-          <tr>
-            <td class="px-4 py-3">Team View (W/L, ATS, PPG/PA)</td>
-            <td class="px-4 py-3">✓ (Monthly only)</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Market View (basic matchup)</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Streaks & Momentum</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Distribution (histograms)</td>
-            <td class="px-4 py-3">Basic</td>
-            <td class="px-4 py-3">Expanded</td>
-            <td class="px-4 py-3">Expanded</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Consistency Index</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Situational Splits (H/A, Fav/Dog, Rest)</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Parlay Builder (EV)</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-            <td class="px-4 py-3">Advanced</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Fair Value Line (model vs market)</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Line Movement & CLV Tracking</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-          <tr>
-            <td class="px-4 py-3">Portfolio / Bankroll Tracker</td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3"></td>
-            <td class="px-4 py-3">✓</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="mt-3 text-xs text-slate-500">Annual plans reflect ≈17% savings vs paying monthly.</p>
-  </section>
-
-  <!-- Product shots (unchanged) -->
-  <section class="bg-slate-950 border-t border-slate-900">
-    <div class="mx-auto max-w-7xl px-6 py-16">
-      <h2 class="text-2xl font-semibold">Product Shots</h2>
-      <div class="mt-8 grid gap-6 md:grid-cols-3">
-        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
-          <img src="assets/shot1.png" alt="Line Shop" class="w-full h-64 object-cover">
-          <figcaption class="px-4 py-3 text-sm text-slate-300">Line Shop</figcaption>
-        </figure>
-        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
-          <img src="assets/shot2.png" alt="Parlay EV" class="w-full h-64 object-cover">
-          <figcaption class="px-4 py-3 text-sm text-slate-300">Parlay EV</figcaption>
-        </figure>
-        <figure class="rounded-2xl overflow-hidden ring-1 ring-white/10 bg-slate-900">
-          <img src="assets/shot3.png" alt="Ghost Parlay" class="w-full h-64 object-cover">
-          <figcaption class="px-4 py-3 text-sm text-slate-300">Ghost Parlay</figcaption>
-        </figure>
+        <div class="rounded-3xl border border-gray-200 bg-gray-50 p-6 shadow-sm">
+          <div class="grid grid-cols-1 gap-4">
+            <div class="rounded-2xl bg-white border border-gray-200 p-5">
+              <h2 class="font-semibold text-lg">What the app does well</h2>
+              <ul class="mt-3 space-y-2 text-sm text-gray-700">
+                <li>• Surfaces top playable edges from the current board</li>
+                <li>• Uses model probability + line context to rank conviction</li>
+                <li>• Adds bankroll-aware slate posture and suggested sizing</li>
+                <li>• Supports backtesting, tracking, props, and parlay workflow</li>
+                <li>• Keeps features organized by tier instead of hiding core value</li>
+              </ul>
+            </div>
+            <div class="rounded-2xl bg-white border border-gray-200 p-5">
+              <h2 class="font-semibold text-lg">Built for more than picks</h2>
+              <p class="mt-3 text-sm text-gray-700">
+                This is not just “top plays.” It is a workflow layer: edge discovery, context, tracking, historical review,
+                power-user exports, and structured decision support.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <footer class="border-t border-slate-900">
-    <div class="mx-auto max-w-7xl px-6 py-10 text-sm text-slate-400">© <span id="y"></span> Calculated Risk. All rights reserved.</div>
+    <!-- CORE FEATURE BLOCKS -->
+    <section class="container mx-auto px-6 py-8">
+      <div class="mb-8">
+        <h2 class="text-3xl font-bold">Current app features</h2>
+        <p class="text-gray-600 mt-2">
+          These are the capabilities the platform is designed to surface today across the app experience.
+        </p>
+      </div>
+
+      <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
+        <div class="rounded-2xl border border-gray-200 p-6 bg-white shadow-sm">
+          <h3 class="text-xl font-semibold">Live Daily Edge Board</h3>
+          <p class="mt-2 text-sm text-gray-600">
+            Ranked daily plays using current lines, edge filtering, best-play deduping across books, and a cleaner slate view.
+          </p>
+          <ul class="mt-4 space-y-2 text-sm text-gray-700">
+            <li>• Top current plays</li>
+            <li>• Best price / best edge logic</li>
+            <li>• Market filtering</li>
+            <li>• Daily slate download</li>
+          </ul>
+        </div>
+
+        <div class="rounded-2xl border border-gray-200 p-6 bg-white shadow-sm">
+          <h3 class="text-xl font-semibold">Bankroll-Aware Guidance</h3>
+          <p class="mt-2 text-sm text-gray-600">
+            The board is not treated as equal every day. Card posture, suggested range, and top-play sizing help control exposure.
+          </p>
+          <ul class="mt-4 space-y-2 text-sm text-gray-700">
+            <li>• Light / Normal / Aggressive slate posture</li>
+            <li>• Suggested stake ranges</li>
+            <li>• Edge-based sizing guidance</li>
+            <li>• Bankroll snapshot support</li>
+          </ul>
+        </div>
+
+        <div class="rounded-2xl border border-gray-200 p-6 bg-white shadow-sm">
+          <h3 class="text-xl font-semibold">Backtesting & Historical Review</h3>
+          <p class="mt-2 text-sm text-gray-600">
+            Review how ideas would have performed across prior slates and compare decision quality against historical results.
+          </p>
+          <ul class="mt-4 space-y-2 text-sm text-gray-700">
+            <li>• Historical analysis</li>
+            <li>• Simulation-aware workflow</li>
+            <li>• Trend review</li>
+            <li>• Performance discipline</li>
+          </ul>
+        </div>
+
+        <div class="rounded-2xl border border-gray-200 p-6 bg-white shadow-sm">
+          <h3 class="text-xl font-semibold">Parlay & Scenario Tools</h3>
+          <p class="mt-2 text-sm text-gray-600">
+            Build structured parlay workflows instead of guessing combinations blindly.
+          </p>
+          <ul class="mt-4 space-y-2 text-sm text-gray-700">
+            <li>• Parlay Builder</li>
+            <li>• Ghost Parlay tools</li>
+            <li>• Scenario organization</li>
+            <li>• Better correlation thinking</li>
+          </ul>
+        </div>
+
+        <div class="rounded-2xl border border-gray-200 p-6 bg-white shadow-sm">
+          <h3 class="text-xl font-semibold">Logs, Tracking & Workflow</h3>
+          <p class="mt-2 text-sm text-gray-600">
+            Sharper users need audit trails. The app is built to support review, iteration, and cleaner learning loops.
+          </p>
+          <ul class="mt-4 space-y-2 text-sm text-gray-700">
+            <li>• Calculated Log / bet tracking</li>
+            <li>• Daily notes and caution layers</li>
+            <li>• Export-friendly structure</li>
+            <li>• Better post-mortem review</li>
+          </ul>
+        </div>
+
+        <div class="rounded-2xl border border-gray-200 p-6 bg-white shadow-sm">
+          <h3 class="text-xl font-semibold">Tiered Intelligence</h3>
+          <p class="mt-2 text-sm text-gray-600">
+            Rookie keeps it simple. Pro adds more depth. HOF unlocks the heavier workflow and power-user layer.
+          </p>
+          <ul class="mt-4 space-y-2 text-sm text-gray-700">
+            <li>• Rookie = clean guidance</li>
+            <li>• Pro = deeper tools and context</li>
+            <li>• HOF = full-feature power workflow</li>
+            <li>• Designed for growth without clutter</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURE LIST BY USER VALUE -->
+    <section class="container mx-auto px-6 py-10">
+      <div class="rounded-3xl bg-gray-50 border border-gray-200 p-8">
+        <div class="grid lg:grid-cols-3 gap-8">
+          <div>
+            <h2 class="text-2xl font-bold">What users actually get</h2>
+            <p class="text-gray-600 mt-2">
+              The point is not to overwhelm people with dashboards. The point is to give them a usable edge workflow.
+            </p>
+          </div>
+
+          <div class="lg:col-span-2 grid md:grid-cols-2 gap-6">
+            <div>
+              <h3 class="font-semibold text-lg">For Rookie users</h3>
+              <ul class="mt-3 space-y-2 text-sm text-gray-700">
+                <li>• Core dashboards and edge views</li>
+                <li>• Weekly simulations</li>
+                <li>• Live board context</li>
+                <li>• Community-facing insight layer</li>
+                <li>• Beginner-friendly decision support</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="font-semibold text-lg">For Pro users</h3>
+              <ul class="mt-3 space-y-2 text-sm text-gray-700">
+                <li>• Everything in Rookie</li>
+                <li>• Advanced trend and matchup layers</li>
+                <li>• Backtesting access</li>
+                <li>• Sharper filters and what-if workflow</li>
+                <li>• Export-capable analysis</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="font-semibold text-lg">For HOF users</h3>
+              <ul class="mt-3 space-y-2 text-sm text-gray-700">
+                <li>• Everything in Pro</li>
+                <li>• Full historical workflow</li>
+                <li>• Power-user exports</li>
+                <li>• Heavy research and scenario support</li>
+                <li>• Maximum control over the stack</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="font-semibold text-lg">Use cases</h3>
+              <ul class="mt-3 space-y-2 text-sm text-gray-700">
+                <li>• Daily betting workflow</li>
+                <li>• Prop research and comparison</li>
+                <li>• Slate discipline and sizing</li>
+                <li>• Post-slate review</li>
+                <li>• Building repeatable process instead of vibes</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCREENSHOTS -->
+    <section class="container mx-auto px-6 py-8 space-y-8">
+      <div>
+        <h2 class="text-3xl font-bold">Visual product snapshots</h2>
+        <p class="text-gray-600 mt-2">
+          These screenshots and comparison visuals support the core product story.
+        </p>
+      </div>
+
+      <section class="space-y-2">
+        <h3 class="text-xl font-semibold">1) Us vs Them</h3>
+        <img src="assets/image00.png" class="w-full rounded-2xl shadow border border-gray-200" alt="Calculated Risk vs competitors" onerror="this.style.display='none'">
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-xl font-semibold">2) Expanded comparison view</h3>
+        <img src="assets/image01.png" class="w-full rounded-2xl shadow border border-gray-200" alt="Expanded comparison view" onerror="this.style.display='none'">
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-xl font-semibold">3) Them at price points</h3>
+        <img src="assets/image02.png" class="w-full rounded-2xl shadow border border-gray-200" alt="Competitors by price point" onerror="this.style.display='none'">
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-xl font-semibold">4) Anonymous competitor tier coverage</h3>
+        <img src="assets/image03.png" class="w-full rounded-2xl shadow border border-gray-200" alt="Anonymous competitor feature comparison" onerror="this.style.display='none'">
+        <p class="text-xs text-gray-500">
+          Anonymous competitor ranges summarize public consumer tiers; scope varies by brand and product focus.
+        </p>
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-xl font-semibold">5) Named example tier coverage</h3>
+        <img src="assets/image04.png" class="w-full rounded-2xl shadow border border-gray-200" alt="Named competitor feature comparison" onerror="this.style.display='none'">
+        <p class="text-xs text-gray-500">
+          Illustrative examples only, not exhaustive. Product bundles and exact entitlements vary by company.
+        </p>
+      </section>
+    </section>
+
+    <!-- TIER COMPARISON -->
+    <section class="container mx-auto px-6 py-10">
+      <div class="mb-6">
+        <h2 class="text-3xl font-bold">Feature coverage by tier</h2>
+        <p class="text-gray-600 mt-2">
+          Clear packaging matters. Here is how the stack is positioned across tiers.
+        </p>
+      </div>
+
+      <div class="overflow-x-auto rounded-2xl border border-gray-200">
+        <table class="min-w-full text-sm bg-white">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left font-semibold">Feature</th>
+              <th class="px-4 py-3 text-center font-semibold">
+                Rookie
+                <div class="text-xs text-gray-500">$20/mo • $200/yr</div>
+              </th>
+              <th class="px-4 py-3 text-center font-semibold">
+                Pro
+                <div class="text-xs text-gray-500">$30/mo • $300/yr</div>
+              </th>
+              <th class="px-4 py-3 text-center font-semibold">
+                HOF
+                <div class="text-xs text-gray-500">$40/mo • $400/yr</div>
+              </th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-200">
+            <tr>
+              <td class="px-4 py-3">Core insights & dashboards</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Live odds & line movement context</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Weekly simulations</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Player prop tools</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Matchup & trend deep-dive</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Bankroll-aware slate notes</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Historical backtesting</td>
+              <td class="px-4 py-3 text-center">—</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Model builder / what-if tools</td>
+              <td class="px-4 py-3 text-center">—</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Sharps / public signal layers</td>
+              <td class="px-4 py-3 text-center">—</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">CSV / export workflow</td>
+              <td class="px-4 py-3 text-center">—</td>
+              <td class="px-4 py-3 text-center">✅</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-3">Power-user research workflow</td>
+              <td class="px-4 py-3 text-center">—</td>
+              <td class="px-4 py-3 text-center">—</td>
+              <td class="px-4 py-3 text-center">✅</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- COMPETITOR COMPARISON -->
+    <section class="container mx-auto px-6 py-10 space-y-8">
+      <div>
+        <h2 class="text-3xl font-bold">How we compare</h2>
+        <p class="text-gray-600 mt-2">
+          The point is not that every competitor is weak. The point is that most products force tradeoffs. Calculated Risk is designed to reduce them.
+        </p>
+      </div>
+
+      <section class="space-y-4">
+        <h3 class="text-2xl font-semibold">Anonymous competitors vs us</h3>
+        <div class="overflow-x-auto rounded-2xl border border-gray-200">
+          <table class="min-w-full text-sm bg-white">
+            <thead class="bg-gray-50">
+              <tr>
+                <th class="px-4 py-3 text-left">Features</th>
+                <th class="px-4 py-3 text-center">
+                  Them (Rookie)
+                  <div class="text-xs text-gray-600">$20–30/mo • $80–300/yr</div>
+                </th>
+                <th class="px-4 py-3 text-center">
+                  Them (Pro)
+                  <div class="text-xs text-gray-600">$50–80/mo • $500–800/yr</div>
+                </th>
+                <th class="px-4 py-3 text-center">
+                  Them (HOF)
+                  <div class="text-xs text-gray-600">$100–250+/mo • $1k–3k+/yr</div>
+                </th>
+                <th class="px-4 py-3 text-center">
+                  Us (Rookie)
+                  <div class="text-xs text-gray-600">$20/mo • $200/yr</div>
+                </th>
+                <th class="px-4 py-3 text-center">
+                  Us (Pro)
+                  <div class="text-xs text-gray-600">$30/mo • $300/yr</div>
+                </th>
+                <th class="px-4 py-3 text-center">
+                  Us (HOF)
+                  <div class="text-xs text-gray-600">$40/mo • $400/yr</div>
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+              <tr>
+                <td class="px-4 py-2">Live Odds &amp; Line Movement</td>
+                <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Historical Backtesting</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Player Prop Tools</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Model Builder / What-If</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Sharps / Public % Signals</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Export (CSV/API)</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Fantasy-Focused (DFS/Lineups/Rankings)</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">☐</td>
+                <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Weekly Simulations</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2">Matchup/Trends Deep-Dive</td>
+                <td class="text-center px-4 py-2">☐</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+                <td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td><td class="text-center px-4 py-2">✅</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-2xl font-semibold">Named examples vs us</h3>
+        <p class="text-xs text-gray-500">
+          Illustrative, not exhaustive: Rookie — Action Network+, PFF+; Pro — BetQL Pro, FantasyLabs, Outlier Pro; HOF — Sports Insights Pro / enterprise bundles.
+        </p>
+        <div class="rounded-2xl border border-gray-200 bg-gray-50 p-5 text-sm text-gray-700">
+          Same idea: most platforms are strong in one or two lanes. Calculated Risk is built to combine live decision support,
+          modeling workflow, bankroll context, props, and review into one cleaner system.
+        </div>
+      </section>
+    </section>
+
+    <!-- CTA -->
+    <section class="container mx-auto px-6 py-12">
+      <div class="rounded-3xl border border-green-200 bg-green-50 p-8 md:p-10">
+        <div class="grid md:grid-cols-2 gap-8 items-center">
+          <div>
+            <h2 class="text-3xl font-bold">Ready to see the full workflow?</h2>
+            <p class="mt-3 text-gray-700">
+              Launch the app, explore the feature stack, and choose the tier that matches how deep you want to go.
+            </p>
+          </div>
+          <div class="flex flex-wrap md:justify-end gap-4">
+            <a href="login.html" class="px-6 py-3 rounded-lg text-white font-semibold brand-accent-bg hover:brightness-110">
+              Launch App
+            </a>
+            <a href="pricing.html" class="px-6 py-3 rounded-lg border border-gray-300 font-semibold hover:bg-white">
+              Compare Plans
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bg-gray-50 border-t mt-16">
+    <div class="container mx-auto px-6 py-10 text-sm text-gray-600 space-y-2">
+      <p>Calculated Risk provides analytics for informational and entertainment purposes only — we are <strong>not</strong> a sportsbook.</p>
+      <p>&copy; 2025 Calculated Risk •
+        <a class="link-accent" href="privacy_terms_services.html">Privacy &amp; Terms</a> •
+        <a class="link-accent" href="mailto:cs@calculatedrisk.group">cs@calculatedrisk.group</a>
+      </p>
+    </div>
   </footer>
-  <script>document.getElementById('y').textContent=new Date().getFullYear();</script>
-</body></html>
+</body>
+</html>
