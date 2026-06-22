@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -24,7 +23,6 @@
 
 <body class="antialiased text-gray-900 bg-white">
 
-  <!-- HEADER -->
   <header class="brand-bg text-white">
     <nav class="container mx-auto px-6">
       <ul class="flex flex-wrap gap-6 items-center py-4">
@@ -42,40 +40,44 @@
     </nav>
   </header>
 
-  <!-- MAIN -->
-  <main class="container mx-auto px-6 py-12 space-y-6">
+  <main class="container mx-auto px-6 py-12 space-y-8">
+    <section class="space-y-3">
+      <h1 class="text-3xl font-bold">Join the Beta</h1>
+      <p class="text-lg text-gray-700 max-w-3xl">
+        Apply to test Calculated Risk and help shape upcoming features.
+        Submit the form below and we’ll follow up with next steps.
+      </p>
+    </section>
 
-    <h1 class="text-3xl font-bold">Join the Beta</h1>
+    <section class="w-full bg-gray-50 border rounded-xl p-4 shadow-sm">
+      <iframe
+        src="https://docs.google.com/forms/d/e/1FAIpQLSf73MQq-i0qACbNxUYzVhpxtcqMq8tLhMCT84RwlTsFgEULBg/viewform?embedded=true"
+        width="100%"
+        height="1600"
+        frameborder="0"
+        marginheight="0"
+        marginwidth="0"
+        style="border:none; background:white;"
+      >
+        Loading…
+      </iframe>
+    </section>
 
-    <p>
-      Apply to test Calculated Risk and shape upcoming features.
-      We'll email next steps.
-    </p>
+    <section class="text-sm text-gray-600">
+      <p>
+        Trouble viewing the embedded form?
+        <a
+          class="link-accent font-semibold"
+          href="https://docs.google.com/forms/d/e/1FAIpQLSf73MQq-i0qACbNxUYzVhpxtcqMq8tLhMCT84RwlTsFgEULBg/viewform"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Open the beta application in a new tab.
+        </a>
+      </p>
+    </section>
+  </main>
 
-    <form
-  class="space-y-4 max-w-md"
-  action="https://formsubmit.co/ajax/rmcoy2@outlook.com"
-  method="POST"
->
-  <input type="hidden" name="_subject" value="New Calculated Risk Beta Signup">
-  <input type="hidden" name="_template" value="table">
-  <input type="hidden" name="_captcha" value="false">
-
-  <input type="text" name="_honey" style="display:none">
-
-  <input required name="full_name" class="w-full border rounded-lg p-3" placeholder="Full Name">
-  <input required name="email" type="email" class="w-full border rounded-lg p-3" placeholder="Email Address">
-  <input required name="phone" type="tel" class="w-full border rounded-lg p-3" placeholder="Phone Number">
-
-  <button
-    type="submit"
-    class="px-5 py-3 brand-accent-bg hover:brightness-110 rounded-lg text-white font-semibold"
-  >
-    Request Invite
-  </button>
-</form>
-
-  <!-- FOOTER -->
   <footer class="bg-gray-50 border-t mt-16">
     <div class="container mx-auto px-6 py-10 text-sm text-gray-600 space-y-2">
       <p>
@@ -93,4 +95,3 @@
 
 </body>
 </html>
-```
